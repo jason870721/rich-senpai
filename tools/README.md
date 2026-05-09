@@ -61,3 +61,16 @@ client.messages.create(
 # Dispatch a tool_use block returned by the model
 result = tool_register.call_tool("read_file", {"path": "main.py"})
 ```
+
+<br>
+
+---
+
+<br>
+
+## Module spec
+
+The agent core that consumes these tools is specified under
+[`.claude/spec/agent-core/`](../.claude/spec/agent-core/). See `SPEC.md` for
+the public interface, `PLAN.md` for phased work, and `PROGRESS.md` for
+current status.

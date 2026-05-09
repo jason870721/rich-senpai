@@ -1,7 +1,7 @@
 # register all agent tool here
 from typing import Any, Callable
 
-from tools import bash, http_request, read_file, write_file
+from tools import bash, http_request, read_file, update_short_memory, wait, write_file
 
 
 SYS_TOOL_PROMPT = """
@@ -12,11 +12,15 @@ machine:
 - write_file: create or overwrite a local file with the given content.
 - bash: run a shell command and capture its stdout, stderr, and exit code.
 - http_request: send an HTTP request and return the response.
+- update_short_memory: overwrite your short_memory.md scratchpad (kept under 3000 tokens).
+- wait: end this cycle and sleep until the next tick (no arguments).
 
 Use the narrowest tool that fits the task. Prefer read_file over bash for
 inspecting files, and prefer write_file over bash for creating files. Never
 run destructive shell commands (rm -rf, force pushes, dropping data, etc.)
-without explicit confirmation from the user.
+without explicit confirmation from the user. Persist context across cycles
+via update_short_memory. When you are done for this cycle, call wait so the
+runner can sleep until the next tick.
 """.strip()
 
 
@@ -25,6 +29,8 @@ TOOL_SPECS: list[dict[str, Any]] = [
     write_file.SPEC,
     bash.SPEC,
     http_request.SPEC,
+    update_short_memory.SPEC,
+    wait.SPEC,
 ]
 
 TOOL_HANDLERS: dict[str, Callable[..., str]] = {
@@ -32,6 +38,8 @@ TOOL_HANDLERS: dict[str, Callable[..., str]] = {
     write_file.SPEC["name"]: write_file.write_file,
     bash.SPEC["name"]: bash.bash,
     http_request.SPEC["name"]: http_request.http_request,
+    update_short_memory.SPEC["name"]: update_short_memory.update_short_memory,
+    wait.SPEC["name"]: wait.wait,
 }
 
 

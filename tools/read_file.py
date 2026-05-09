@@ -27,7 +27,7 @@ SPEC = {
 
 
 def read_file(path: str, encoding: str = "utf-8") -> str:
-    file_path = Path(path)
+    file_path = Path(path).expanduser()
     if not file_path.exists():
         return f"error: file not found: {path}"
     if not file_path.is_file():

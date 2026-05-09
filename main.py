@@ -1,4 +1,9 @@
-from tools import tool_register
+from dotenv import load_dotenv
 
-if __name__ == '__main__':
-    print(tool_register.call_tool("http_request", {"method": "GET", "url": "http://www.baidu.com"}))
+load_dotenv()
+
+from tui import main
+
+
+if __name__ == "__main__":
+    main()

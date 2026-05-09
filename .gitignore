@@ -26,3 +26,7 @@ htmlcov/
 
 # Environment variables
 .env
+
+# Agent runtime artifacts
+rich_senpai.db
+short_memory.md

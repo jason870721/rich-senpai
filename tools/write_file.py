@@ -31,7 +31,7 @@ SPEC = {
 
 
 def write_file(path: str, content: str, encoding: str = "utf-8") -> str:
-    file_path = Path(path)
+    file_path = Path(path).expanduser()
     if not file_path.parent.exists():
         return f"error: parent directory does not exist: {file_path.parent}"
     try:
