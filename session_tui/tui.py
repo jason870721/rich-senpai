@@ -321,7 +321,7 @@ class SenpaiApp(App):
             self._write(
                 Panel(
                     Markdown(text),
-                    title=f"[bold cyan]assistant[/]  [dim]iter {i}[/]",
+                    title=f"[bold cyan]senpai[/]  [dim]iter {i}[/]",
                     title_align="left",
                     border_style="cyan",
                 )
