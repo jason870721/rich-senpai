@@ -7,14 +7,19 @@ SPEC = {
     "name": "background_run",
     "description": (
         "Run a shell command in a background thread. Returns immediately "
-        "with a short task id. Completion notifications are surfaced to "
-        "the agent on the next turn; check status explicitly via "
-        "check_background(task_id)."
+        "with a `task_id=<id>` line you can use later. When the command "
+        "finishes, a short preview (~500 chars) of its output is "
+        "auto-surfaced to you on the next turn via a <background-results> "
+        "block — you don't need to poll. For the full output (up to 50k "
+        "chars) or to check status mid-run, call check_background(task_id)."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
-            "command": {"type": "string"},
+            "command": {
+                "type": "string",
+                "description": "Shell command to run (executed via /bin/sh -c).",
+            },
             "timeout": {
                 "type": "integer",
                 "description": (

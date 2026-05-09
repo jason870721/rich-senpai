@@ -151,6 +151,16 @@ class SenpaiApp(App):
         padding: 0 1;
         color: cyan;
     }
+    #todos {
+        height: auto;
+        max-height: 14;
+        padding: 0 1;
+    }
+    #bg {
+        height: auto;
+        max-height: 12;
+        padding: 0 1;
+    }
     HistoryInput {
         dock: bottom;
         margin: 0 0 0 0;
@@ -188,6 +198,18 @@ class SenpaiApp(App):
         # tool_use ids whose tool_result we want to suppress in the log
         # (currently: load_skill, since its result is the entire skill body).
         self._suppressed_tool_ids: set[str] = set()
+        # Snapshot of the last all-completed todo list we archived into the
+        # log. Used to avoid re-archiving on subsequent refreshes that
+        # see the same fully-done list.
+        self._archived_todo_signature: tuple[tuple[str, str], ...] | None = None
+        # Background-tasks panel: a 1Hz timer keeps it live while workers
+        # are running so the user sees status transitions without waiting
+        # for the next agent turn.
+        self._bg_tick_timer: Timer | None = None
+        self._last_bg_signature: tuple | None = None
+        # Snapshot of the last all-settled background-tasks set we
+        # archived into the log; mirrors _archived_todo_signature.
+        self._archived_bg_signature: tuple | None = None
 
     def _describe_model(self) -> str:
         """Short string describing the active LLM, e.g. 'ollama · qwen3.6:latest'."""
@@ -199,6 +221,12 @@ class SenpaiApp(App):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         yield RichLog(id="log", markup=True, highlight=False, wrap=True)
+        # Todos panel sits above the status; auto-sized, hidden while empty.
+        # Refreshed in place whenever the agent calls TodoWrite.
+        yield Static("", id="todos")
+        # Background tasks panel — sibling of todos, ticked once a second
+        # so running → completed transitions show up live.
+        yield Static("", id="bg")
         # Status sits in normal flow between the log and the docked input,
         # so it occupies a fixed 1-row band that's always visible.
         yield Static("", id="status")
@@ -221,6 +249,11 @@ class SenpaiApp(App):
                 border_style="cyan",
             )
         )
+        self._refresh_todos()
+        self._refresh_bg()
+        # 1Hz tick keeps the bg panel honest as worker threads finish
+        # (state.BG.tasks mutates outside the agent thread).
+        self._bg_tick_timer = self.set_interval(1.0, self._refresh_bg)
         self.query_one(HistoryInput).focus()
 
     def on_unmount(self) -> None:
@@ -302,6 +335,14 @@ class SenpaiApp(App):
                 if tu_id:
                     self._suppressed_tool_ids.add(tu_id)
                 return
+            if event.get("name") == "TodoWrite":
+                # Don't echo TodoWrite to the log — the bottom panel is
+                # the canonical view. Suppress the matching tool_result
+                # too; we refresh the panel when it lands.
+                tu_id = event.get("id")
+                if tu_id:
+                    self._suppressed_tool_ids.add(tu_id)
+                return
             args = _format_tool_input(event["input"])
             self._write(
                 Text.assemble(
@@ -318,6 +359,8 @@ class SenpaiApp(App):
             tu_id = event.get("id")
             if tu_id and tu_id in self._suppressed_tool_ids:
                 self._suppressed_tool_ids.discard(tu_id)
+                if event.get("name") == "TodoWrite":
+                    self._refresh_todos()
                 return
             output = _truncate(event["output"], TOOL_RESULT_PREVIEW_CHARS)
             self._write(
@@ -329,11 +372,12 @@ class SenpaiApp(App):
                 )
             )
         elif kind == "wait":
+            seconds = event.get("seconds", "?")
             self._write(
                 Text.assemble(
-                    ("✓ ", "green"),
-                    ("wait", "bold green"),
-                    (f"  iter {i} — cycle complete", "dim"),
+                    ("⏸ ", "yellow"),
+                    ("wait", "bold yellow"),
+                    (f"  iter {i} — sleeping {seconds}s", "dim"),
                 )
             )
         elif kind == "compact":
@@ -363,6 +407,143 @@ class SenpaiApp(App):
                 )
             )
 
+    def _build_todos_panel(
+        self,
+        items: list[dict[str, str]],
+        *,
+        title: str = "todos",
+        border_style: str = "green",
+    ) -> Panel:
+        glyphs = {"completed": "[x]", "in_progress": "[>]", "pending": "[ ]"}
+        styles = {
+            "completed": "dim green",
+            "in_progress": "bold yellow",
+            "pending": "white",
+        }
+        body = Text()
+        for i, item in enumerate(items):
+            status = item["status"]
+            mark = glyphs.get(status, "[?]")
+            label = item["activeForm"] if status == "in_progress" else item["content"]
+            if i:
+                body.append("\n")
+            body.append(f"{mark} {label}", style=styles.get(status, ""))
+        done = sum(1 for t in items if t["status"] == "completed")
+        body.append(f"\n({done}/{len(items)} completed)", style="dim")
+        return Panel(body, title=title, title_align="left", border_style=border_style)
+
+    def _refresh_todos(self) -> None:
+        """Repaint the docked todos panel from state.TODO.
+
+        When every item is completed we archive the list into the
+        scrolling log and hide the bottom panel — the next TodoWrite with
+        new (incomplete) items will re-show it.
+        """
+        widget = self.query_one("#todos", Static)
+        items = state.TODO.items
+
+        if not items:
+            widget.display = False
+            widget.update("")
+            return
+
+        signature = tuple((t["content"], t["status"]) for t in items)
+        all_done = all(t["status"] == "completed" for t in items)
+
+        if all_done:
+            if signature != self._archived_todo_signature:
+                self._write(
+                    self._build_todos_panel(
+                        items, title="todos · all done", border_style="green"
+                    )
+                )
+                self._archived_todo_signature = signature
+            widget.display = False
+            widget.update("")
+            return
+
+        # Mixed / in-progress list — clear any stale archive marker so the
+        # next all-done snapshot re-archives cleanly.
+        self._archived_todo_signature = None
+        widget.display = True
+        widget.update(self._build_todos_panel(items))
+
+    def _build_bg_panel(
+        self,
+        snapshot: list[tuple[str, str, str]],
+        *,
+        title: str = "background",
+        border_style: str = "yellow",
+    ) -> Panel:
+        glyphs = {"running": "[•]", "completed": "[x]", "error": "[!]"}
+        styles = {
+            "running": "bold yellow",
+            "completed": "dim green",
+            "error": "bold red",
+        }
+        body = Text()
+        for i, (tid, status, command) in enumerate(snapshot):
+            mark = glyphs.get(status, "[?]")
+            cmd = command if len(command) <= 70 else command[:67] + "..."
+            if i:
+                body.append("\n")
+            body.append(f"{mark} {tid}  ", style=styles.get(status, ""))
+            body.append(cmd, style="white")
+        running = sum(1 for _, s, _ in snapshot if s == "running")
+        body.append(
+            f"\n({running} running / {len(snapshot)} total)",
+            style="dim",
+        )
+        return Panel(body, title=title, title_align="left", border_style=border_style)
+
+    def _refresh_bg(self) -> None:
+        """Repaint the docked background-tasks panel from state.BG.
+
+        When every task has settled (no running) we archive the list into
+        the scrolling log and hide the bottom panel — the next
+        background_run that creates a running task will re-show it.
+        """
+        widget = self.query_one("#bg", Static)
+        tasks = state.BG.tasks
+
+        if not tasks:
+            if self._last_bg_signature is not None:
+                widget.display = False
+                widget.update("")
+                self._last_bg_signature = None
+            return
+
+        snapshot = sorted(
+            (tid, t.get("status", "?"), t.get("command", ""))
+            for tid, t in tasks.items()
+        )
+        signature = tuple((tid, status) for tid, status, _ in snapshot)
+        if signature == self._last_bg_signature:
+            return
+        self._last_bg_signature = signature
+
+        all_settled = not any(s == "running" for _, s, _ in snapshot)
+
+        if all_settled:
+            if signature != self._archived_bg_signature:
+                self._write(
+                    self._build_bg_panel(
+                        snapshot,
+                        title="background · all done",
+                        border_style="green",
+                    )
+                )
+                self._archived_bg_signature = signature
+            widget.display = False
+            widget.update("")
+            return
+
+        # At least one task is still running — make sure the next
+        # all-settled snapshot re-archives even if it matches a stale one.
+        self._archived_bg_signature = None
+        widget.display = True
+        widget.update(self._build_bg_panel(snapshot))
+
     def _render_skill_load(self, event: dict[str, Any]) -> None:
         """Show a clear banner when the agent loads a skill, and remember
         which skills have been activated so the turn footer can list them."""
@@ -385,7 +566,7 @@ class SenpaiApp(App):
 
         border = "magenta" if available else "red"
         title_glyph = "📚" if available else "❓"
-        title = f"[bold {border}]{title_glyph} skill {'loaded' if available else 'NOT FOUND'}[/]  [dim]iter {event.get('iteration', 0)}[/]"
+        title = f"[bold {border}]{title_glyph} skill {'loaded' if available else 'NOT FOUND'}[/]"
         body = Text.assemble(
             (name, "bold"),
             (f"\n{description}", "dim"),
@@ -421,7 +602,8 @@ class SenpaiApp(App):
         if kind == "inbox_drain":
             return "draining inbox"
         if kind == "wait":
-            return "wrapping up"
+            seconds = event.get("seconds", "?")
+            return f"sleeping {seconds}s…"
         return "thinking"
 
     def _write_turn_footer(self, result: CycleResult) -> None:

@@ -22,6 +22,17 @@ from core import config
 from core.config import BG_DEFAULT_TIMEOUT
 
 
+_RESULT_MAX_CHARS = 50_000
+_SNAPSHOT_PREVIEW_CHARS = 500
+
+
+def _truncate_with_marker(text: str, limit: int, *, suffix_hint: str) -> str:
+    if len(text) <= limit:
+        return text
+    extra = len(text) - limit
+    return f"{text[:limit]}\n... (+{extra} more chars{suffix_hint})"
+
+
 class BackgroundManager:
     def __init__(self, workdir: Path | None = None) -> None:
         self.workdir = workdir or config.WORKDIR
@@ -38,7 +49,7 @@ class BackgroundManager:
             args=(tid, command, timeout),
             daemon=True,
         ).start()
-        return f"Background task {tid} started: {command[:80]}"
+        return f"task_id={tid}\nstarted: {command[:80]}"
 
     def _exec(self, tid: str, command: str, timeout: int) -> None:
         try:
@@ -50,19 +61,28 @@ class BackgroundManager:
                 text=True,
                 timeout=timeout,
             )
-            output = (r.stdout + r.stderr).strip()[:50_000]
+            raw = (r.stdout + r.stderr).strip()
+            output = _truncate_with_marker(
+                raw, _RESULT_MAX_CHARS, suffix_hint=" elided"
+            )
             status, result = "completed", output or "(no output)"
         except subprocess.TimeoutExpired:
             status, result = "error", f"timeout after {timeout}s"
         except Exception as exc:  # noqa: BLE001 -- want everything in result
             status, result = "error", str(exc)
 
+        preview = _truncate_with_marker(
+            str(result),
+            _SNAPSHOT_PREVIEW_CHARS,
+            suffix_hint=f", call check_background('{tid}') for full output",
+        )
+
         with self._lock:
             self.tasks[tid].update({"status": status, "result": result})
             snapshot = {
                 "task_id": tid,
                 "status": status,
-                "result": str(result)[:500],
+                "result": preview,
             }
         self.notifications.put(snapshot)
 
@@ -72,7 +92,9 @@ class BackgroundManager:
                 t = self.tasks.get(tid)
                 if not t:
                     return f"Unknown background task: {tid}"
-                return f"[{t['status']}] {t.get('result') or '(running)'}"
+                command = t.get("command", "")
+                result = t.get("result") or "(running)"
+                return f"[{t['status']}] $ {command}\n{result}"
             if not self.tasks:
                 return "No bg tasks."
             # Snapshot to a list of tuples while holding the lock so the join

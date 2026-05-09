@@ -7,8 +7,15 @@ from core import state
 SPEC = {
     "name": "TodoWrite",
     "description": (
-        "Overwrite the working todo list. Use for short, in-session "
-        "checklists; for durable cross-session work prefer task_create."
+        "Overwrite the working todo list for the current session. "
+        "Use it to plan and track multi-step work (3+ steps, branching, "
+        "or anything spanning multiple tool calls). Skip it for single-"
+        "step tasks. Each item needs `content` (imperative form), "
+        "`activeForm` (present-continuous, shown while in_progress), and "
+        "`status` (pending|in_progress|completed). Only one item may be "
+        "in_progress at a time. Mark items completed as soon as the work "
+        "is done — don't batch. The list is in-process only; for durable "
+        "cross-session work use task_create instead."
     ),
     "input_schema": {
         "type": "object",

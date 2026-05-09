@@ -21,6 +21,7 @@ any implementation of that interface can be injected via the `llm` argument.
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -40,6 +41,8 @@ from core.config import (
     SHORT_MEMORY_TOKEN_BUDGET,
     TODO_NAG_AFTER_ROUNDS,
     TOKEN_THRESHOLD,
+    WAIT_DEFAULT_SECONDS,
+    WAIT_MAX_SECONDS,
 )
 from core.llm import (
     LLMClient,
@@ -166,59 +169,45 @@ class AgentCore:
         messages[:] = auto_compact(messages, llm=self.llm, system=self.system_prompt)
 
     def _maybe_add_load_skill_prompt(self, user_input: str) -> str:
-        """If the user starts the message with `/<skill-name>`, look up that
-        skill in `state.SKILLS` and inject its body directly into the user
-        message so the model has the skill content in context before it
-        replies. Doing this client-side (instead of relying on the model to
-        call the load_skill tool) makes the skill load deterministic.
-
-        Examples:
-          "/commit"            -> "<skill name='commit'>...</skill>\\n"
-          "/commit fix typo"   -> "<skill name='commit'>...</skill>\\n\\nfix typo"
-          "/unknown anything"  -> unchanged (no matching skill registered)
-          "ordinary message"   -> unchanged
         """
+        Convert slash-prefixed input into a lightweight instruction
+        that tells the model a skill may be relevant.
+
+        The model can decide whether it actually needs to load
+        the skill content.
+        """
+
         stripped = user_input.lstrip()
+
         if not stripped.startswith("/"):
             return user_input
 
-        # Pull the first token after the leading slash.
-        head, _, tail = stripped[1:].partition(" ")
-        skill_name = head.strip()
+        command, _, rest = stripped[1:].partition(" ")
+
+        skill_name = command.strip()
+
         if not skill_name:
             return user_input
 
         skill = state.SKILLS.skills.get(skill_name)
+
         if skill is None:
-            # Not a known skill — leave the slash command alone (might be
-            # something else, e.g. a typo the user can re-issue).
             return user_input
 
-        body = str(skill.get("body", "")).strip()
-        rest = tail.strip()
-        # Surface the load through the same event channel the load_skill
-        # tool uses, so the TUI's skill-loaded banner fires.
-        self._emit({
-            "type": "tool_use",
-            "iteration": -1,
-            "id": f"sk_{skill_name}",
-            "name": "load_skill",
-            "input": {"name": skill_name},
-        })
-        # Mark the matching tool_result as suppressed by emitting a fake
-        # one with a dummy id so the TUI can correlate.
-        self._emit({
-            "type": "tool_result",
-            "iteration": -1,
-            "id": f"sk_{skill_name}",
-            "name": "load_skill",
-            "output": "(loaded client-side)",
-        })
+        description = skill["description"]
 
-        injected = f"<skill name=\"{skill_name}\">\n{body}\n</skill>"
-        if rest:
-            return f"{injected}\n\n{rest}"
-        return injected
+        guidance = (
+            f"The user referenced skill '{skill_name}'.\n"
+            f"Skill description: {description}\n\n"
+            f"If the exact skill content is already known from prior context, "
+            f"respond normally.\n"
+            f"Otherwise, use the load_skill tool to retrieve the full skill content."
+        )
+
+        if rest.strip():
+            return f"{guidance}\n\nUser request:\n{rest.strip()}"
+
+        return guidance
 
     # ----- public API --------------------------------------------------------
 
@@ -293,15 +282,6 @@ class AgentCore:
             tool_results, sentinel, used_todo = self._dispatch_tool_uses(
                 response.content, i, tool_calls
             )
-            if sentinel == "wait":
-                return self._result(
-                    final_text_parts,
-                    "wait",
-                    i + 1,
-                    tool_calls,
-                    total_in,
-                    total_out,
-                )
 
             self._maybe_append_todo_nag(tool_results, used_todo)
 
@@ -329,8 +309,9 @@ class AgentCore:
         tool_calls: list[ToolCall],
     ) -> tuple[list[ToolResultBlock], str | None, bool]:
         """Run every tool_use block in `blocks`. Returns (results, sentinel,
-        used_todo). Sentinel is 'wait' or 'compress' if those names appear,
-        otherwise None — caller handles the side effect."""
+        used_todo). Sentinel is 'compress' if that name appears, otherwise
+        None — caller handles the side effect. `wait` is handled inline
+        (sleep + synthetic tool_result) and never sets a sentinel."""
         results: list[ToolResultBlock] = []
         sentinel: str | None = None
         used_todo = False
@@ -341,10 +322,33 @@ class AgentCore:
             tool_input = dict(block.input) if block.input else {}
 
             if block.name == "wait":
-                self._emit({"type": "wait", "iteration": iteration})
-                sentinel = "wait"
-                # Stop dispatching further tools — wait is terminal.
-                return results, sentinel, used_todo
+                seconds = tool_input.get("seconds", WAIT_DEFAULT_SECONDS)
+                try:
+                    seconds = int(seconds)
+                except (TypeError, ValueError):
+                    seconds = WAIT_DEFAULT_SECONDS
+                seconds = max(1, min(seconds, WAIT_MAX_SECONDS))
+                self._emit({
+                    "type": "wait",
+                    "iteration": iteration,
+                    "id": block.id,
+                    "seconds": seconds,
+                })
+                time.sleep(seconds)
+                output = (
+                    f"slept {seconds}s — re-iterating; pre-LLM hooks will "
+                    f"drain background results / inbox before the next call."
+                )
+                self._emit({
+                    "type": "tool_result",
+                    "iteration": iteration,
+                    "id": block.id,
+                    "name": "wait",
+                    "output": output,
+                })
+                tool_calls.append(ToolCall(block.name, tool_input, output))
+                results.append(ToolResultBlock(tool_use_id=block.id, content=output))
+                continue
 
             self._emit({
                 "type": "tool_use",
@@ -390,7 +394,7 @@ class AgentCore:
         ):
             # Append as plain text alongside the tool_results — mixing is allowed
             # in user turns and avoids fabricating a tool_use_id.
-            results.append(TextBlock(text="<reminder>Update your todos.</reminder>"))
+            results.append(TextBlock(text="<reminder>Update your todos with TodoWrite tool.</reminder>"))
 
     def _build_initial_user_message(self, user_input: str) -> str:
         short_mem_text = self._read_short_memory()

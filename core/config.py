@@ -63,6 +63,8 @@ TEAM_MAX_TOKENS: int = _int("TEAM_MAX_TOKENS", 8000)
 BASH_DEFAULT_TIMEOUT: int = _int("BASH_DEFAULT_TIMEOUT", 30)
 HTTP_DEFAULT_TIMEOUT: int = _int("HTTP_DEFAULT_TIMEOUT", 30)
 BG_DEFAULT_TIMEOUT: int = _int("BG_DEFAULT_TIMEOUT", 120)
+WAIT_DEFAULT_SECONDS: int = _int("WAIT_DEFAULT_SECONDS", 15)
+WAIT_MAX_SECONDS: int = _int("WAIT_MAX_SECONDS", 300)
 
 # --- Paths ----------------------------------------------------------------
 # Root directory for all runtime artifacts (.tasks/, .team/, .transcripts/,
