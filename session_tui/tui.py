@@ -897,7 +897,7 @@ class SenpaiApp(App):
         checks the flag at iteration boundaries, so the current LLM call
         finishes before we return; further iterations / tool dispatch are
         skipped. No-op when idle."""
-        if not self._busy:
+        if not self._busy or self._status_label == "interrupting…":
             return
         self.agent.request_interrupt()
         self._status_label = "interrupting…"

@@ -279,6 +279,7 @@ class AgentCore:
                 return self._result(
                     final_text_parts, "interrupted", i, tool_calls, total_in, total_out
                 )
+
             microcompact(messages, keep_recent=1)
             self._maybe_auto_compact(messages)
             self._drain_background(messages)
@@ -293,6 +294,15 @@ class AgentCore:
                 tools=tool_register.TOOL_SPECS,
                 max_tokens=self.max_tokens_per_call,
             )
+
+            # Interrupt requested while the LLM was generating? Skip tool
+            # dispatch — the user wanted us to stop, not run more side effects.
+            if self._interrupt.is_set():
+                self._emit({"type": "interrupted", "iteration": i, "stage": "pre_tool_dispatch"})
+                return self._result(
+                    final_text_parts, "interrupted", i + 1, tool_calls, total_in, total_out
+                )
+
             self._emit({"type": "llm_response", "iteration": i})
 
             total_in += response.usage.input_tokens
@@ -316,14 +326,6 @@ class AgentCore:
                     tool_calls,
                     total_in,
                     total_out,
-                )
-
-            # Interrupt requested while the LLM was generating? Skip tool
-            # dispatch — the user wanted us to stop, not run more side effects.
-            if self._interrupt.is_set():
-                self._emit({"type": "interrupted", "iteration": i, "stage": "pre_tool_dispatch"})
-                return self._result(
-                    final_text_parts, "interrupted", i + 1, tool_calls, total_in, total_out
                 )
 
             tool_results, sentinel, used_todo = self._dispatch_tool_uses(
