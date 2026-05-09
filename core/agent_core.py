@@ -287,7 +287,13 @@ class AgentCore:
                 # Stop dispatching further tools — wait is terminal.
                 return results, sentinel, used_todo
 
-            self._emit({"type": "tool_use", "iteration": iteration, "name": block.name, "input": tool_input})
+            self._emit({
+                "type": "tool_use",
+                "iteration": iteration,
+                "id": block.id,
+                "name": block.name,
+                "input": tool_input,
+            })
 
             if block.name == "compress":
                 output = "compressing conversation context..."
@@ -295,7 +301,13 @@ class AgentCore:
             else:
                 output = tool_register.call_tool(block.name, tool_input)
 
-            self._emit({"type": "tool_result", "iteration": iteration, "output": output})
+            self._emit({
+                "type": "tool_result",
+                "iteration": iteration,
+                "id": block.id,
+                "name": block.name,
+                "output": output,
+            })
             tool_calls.append(ToolCall(block.name, tool_input, output))
             results.append(ToolResultBlock(tool_use_id=block.id, content=output))
 

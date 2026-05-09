@@ -182,6 +182,12 @@ class SenpaiApp(App):
         self._status_label = ""
         self._status_iter = 0
         self._tick_timer: Timer | None = None
+        # skills the model has loaded this session — used to surface a
+        # banner when load_skill fires and an "active skills" footer.
+        self._active_skills: set[str] = set()
+        # tool_use ids whose tool_result we want to suppress in the log
+        # (currently: load_skill, since its result is the entire skill body).
+        self._suppressed_tool_ids: set[str] = set()
 
     def _describe_model(self) -> str:
         """Short string describing the active LLM, e.g. 'ollama · qwen3.6:latest'."""
@@ -288,6 +294,14 @@ class SenpaiApp(App):
                 )
             )
         elif kind == "tool_use":
+            if event.get("name") == "load_skill":
+                self._render_skill_load(event)
+                # Suppress the matching tool_result — its body is the
+                # entire skill markdown which would dominate the log.
+                tu_id = event.get("id")
+                if tu_id:
+                    self._suppressed_tool_ids.add(tu_id)
+                return
             args = _format_tool_input(event["input"])
             self._write(
                 Text.assemble(
@@ -301,6 +315,10 @@ class SenpaiApp(App):
                 )
             )
         elif kind == "tool_result":
+            tu_id = event.get("id")
+            if tu_id and tu_id in self._suppressed_tool_ids:
+                self._suppressed_tool_ids.discard(tu_id)
+                return
             output = _truncate(event["output"], TOOL_RESULT_PREVIEW_CHARS)
             self._write(
                 Panel(
@@ -345,6 +363,41 @@ class SenpaiApp(App):
                 )
             )
 
+    def _render_skill_load(self, event: dict[str, Any]) -> None:
+        """Show a clear banner when the agent loads a skill, and remember
+        which skills have been activated so the turn footer can list them."""
+        name = (event.get("input") or {}).get("name") or "<unknown>"
+
+        # Pull the skill description from the loader if it's a known skill;
+        # show a hint when the model asks for one that doesn't exist.
+        skill = state.SKILLS.skills.get(name)
+        if skill:
+            self._active_skills.add(name)
+            description = str(skill.get("meta", {}).get("description", "")).strip() or "(no description)"
+            available = True
+        else:
+            description = (
+                "skill not found — agent will get an error result. "
+                f"Available: {', '.join(sorted(state.SKILLS.skills.keys())) or '(none)'}"
+            )
+            available = False
+
+        border = "magenta" if available else "red"
+        title_glyph = "📚" if available else "❓"
+        title = f"[bold {border}]{title_glyph} skill {'loaded' if available else 'NOT FOUND'}[/]  [dim]iter {event.get('iteration', 0)}[/]"
+        body = Text.assemble(
+            (name, "bold"),
+            (f"\n{description}", "dim"),
+        )
+        self._write(
+            Panel(
+                body,
+                title=title,
+                title_align="left",
+                border_style=border,
+            )
+        )
+
     @staticmethod
     def _status_label_for(event: dict[str, Any]) -> str:
         kind = event.get("type")
@@ -372,6 +425,11 @@ class SenpaiApp(App):
 
     def _write_turn_footer(self, result: CycleResult) -> None:
         usage = result.usage or {}
+        skill_suffix = (
+            f"  · skills: {', '.join(sorted(self._active_skills))}"
+            if self._active_skills
+            else ""
+        )
         self._write(
             Text.assemble(
                 (f"\n#{self.turn_no}  ", "dim"),
@@ -383,6 +441,7 @@ class SenpaiApp(App):
                     "dim",
                 ),
                 (f"[{self._model_label}]", "cyan"),
+                (skill_suffix, "magenta"),
             )
         )
 
