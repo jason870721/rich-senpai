@@ -40,7 +40,7 @@ class SkillLoader:
             skill_name = skill_file.parent.name
 
             self.skills[skill_name] = {
-                "desc": desc,
+                "description": desc,
                 "body": body,
                 "path": str(skill_file),
             }
@@ -53,7 +53,7 @@ class SkillLoader:
             return "(no skills)"
 
         return "\n".join(
-            f"  - {name}: {skill['desc']}"
+            f"  - {name}: {skill['description']}"
             for name, skill in self.skills.items()
         )
 

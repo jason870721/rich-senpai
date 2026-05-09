@@ -373,7 +373,8 @@ class SenpaiApp(App):
         skill = state.SKILLS.skills.get(name)
         if skill:
             self._active_skills.add(name)
-            description = str(skill.get("meta", {}).get("description", "")).strip() or "(no description)"
+            # description = str(skill.get("meta", {}).get("description", "")).strip() or "(no description)"
+            description = str(skill.get("description", {})).strip() or "(no description)"
             available = True
         else:
             description = (
