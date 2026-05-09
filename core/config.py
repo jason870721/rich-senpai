@@ -82,4 +82,4 @@ TEAM_DIR: Path = SENPAI_HOME / "team"
 INBOX_DIR: Path = TEAM_DIR / "inbox"
 TRANSCRIPT_DIR: Path = SENPAI_HOME / "transcripts"
 
-SHORT_MEMORY_PATH: str = _str("RICH_SENPAI_SHORT_MEM", str(WORKDIR / "short_memory.md"))
+SHORT_MEMORY_PATH: str = _str("RICH_SENPAI_SHORT_MEM", str(SENPAI_HOME / "short_memory.md"))
