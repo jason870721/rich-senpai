@@ -4,11 +4,9 @@
 # message of every cycle. The path is read from RICH_SENPAI_SHORT_MEM at
 # call time, falling back to the project-root default. The agent core
 # reads the same env var in __init__ so both stay in sync.
-import os
 from pathlib import Path
 
-
-_DEFAULT_PATH = "short_memory.md"
+from core.config import SHORT_MEMORY_PATH
 
 
 SPEC = {
@@ -33,7 +31,7 @@ SPEC = {
 
 
 def update_short_memory(markdown_content: str) -> str:
-    path = Path(os.environ.get("RICH_SENPAI_SHORT_MEM", _DEFAULT_PATH))
+    path = Path(SHORT_MEMORY_PATH)
     try:
         bytes_written = path.write_text(markdown_content, encoding="utf-8")
     except OSError as exc:

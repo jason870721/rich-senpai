@@ -1,6 +1,8 @@
 # http request tool
 import requests
 
+from core.config import HTTP_DEFAULT_TIMEOUT
+
 
 SPEC = {
     "name": "http_request",
@@ -34,7 +36,10 @@ SPEC = {
             },
             "timeout": {
                 "type": "number",
-                "description": "Request timeout in seconds. Defaults to 30.",
+                "description": (
+                    f"Request timeout in seconds. "
+                    f"Defaults to {HTTP_DEFAULT_TIMEOUT} (HTTP_DEFAULT_TIMEOUT)."
+                ),
             },
         },
         "required": ["method", "url"],
@@ -48,7 +53,7 @@ def http_request(
     headers: dict | None = None,
     json_body: dict | None = None,
     text_body: str | None = None,
-    timeout: float = 30,
+    timeout: float = HTTP_DEFAULT_TIMEOUT,
 ) -> str:
     try:
         response = requests.request(

@@ -1,4 +1,4 @@
-"""Agent core — Phase 3 ReAct loop with audit logging.
+"""Agent core
 
 One call to `run_cycle`:
 
@@ -9,35 +9,48 @@ One call to `run_cycle`:
   4. On every exit path — clean *or* exceptional — writes one row to
      agent_logs via core.audit.log_cycle.
 
-Phase 4 unifies env-var config; Phase 5 adds retry/backoff and tool-loop guards.
+The loop also runs the s_full mechanisms before each LLM call:
+microcompact + auto-compact, drain background notifications, drain the
+lead inbox, and at the end of each turn check whether a manual `compress`
+or todo-nag reminder should fire. State for the new managers lives in
+`core.state` so tools/agent core/TUI all share one set of singletons.
+
+LLM access goes through `core.llm.LLMClient`. The default is Anthropic, but
+any implementation of that interface can be injected via the `llm` argument.
 """
 from __future__ import annotations
 
-import os
-import traceback
+import json
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-import anthropic
 import tiktoken
 
-from core import audit
-from tools import tool_register
-
-
-SYSTEM_PROMPT= (
-    "You are rich-senpai, an autonomous trading agent (development build).\n"
-    "Local tools: read_file, write_file, bash, http_request, "
-    "update_short_memory, wait.\n"
-    "Persist your thesis and notes via update_short_memory between cycles "
-    "(keep it under 3000 tokens — summarize when it grows). "
-    "Call exactly one tool per turn. When done with this cycle, call wait."
+from core import state
+from core.compaction import (
+    auto_compact,
+    estimate_tokens,
+    microcompact,
 )
-
-# MODEL_NAME = "claude-sonnet-4-7"
-MODEL_NAME = "claude-haiku-4-5-20251001"
+from core.config import (
+    MAX_ITERATIONS,
+    MAX_TOKENS_PER_CALL,
+    SHORT_MEMORY_PATH,
+    SHORT_MEMORY_TOKEN_BUDGET,
+    TODO_NAG_AFTER_ROUNDS,
+    TOKEN_THRESHOLD,
+)
+from core.llm import (
+    LLMClient,
+    Message,
+    TextBlock,
+    ToolResultBlock,
+    ToolUseBlock,
+    build_default_client,
+)
+from core.sys_prompt import SYSTEM_PROMPT
+from tools import tool_register
 
 
 _TIKTOKEN_ENCODER = tiktoken.get_encoding("cl100k_base")
@@ -45,46 +58,6 @@ _TIKTOKEN_ENCODER = tiktoken.get_encoding("cl100k_base")
 
 def _count_tokens(text: str) -> int:
     return len(_TIKTOKEN_ENCODER.encode(text))
-
-
-def _micro_compact_tool_results(
-    messages: list[dict[str, Any]],
-    *,
-    keep_recent: int = 1,
-    threshold: int = 200,
-) -> None:
-    """In-place: replace tool_result content in older user turns with a
-    compact stub, preserving tool_use_id so the model can still match
-    results to calls. Keeps the most recent `keep_recent` tool_result-bearing
-    user turns intact. Idempotent — already-compacted stubs (< threshold
-    chars) pass through unchanged."""
-    indices = [
-        i for i, m in enumerate(messages)
-        if m.get("role") == "user"
-        and isinstance(m.get("content"), list)
-        and any(
-            isinstance(b, dict) and b.get("type") == "tool_result"
-            for b in m["content"]
-        )
-    ]
-    if len(indices) <= keep_recent:
-        return
-
-    to_compact = indices[:-keep_recent] if keep_recent > 0 else indices
-    for idx in to_compact:
-        new_content: list[Any] = []
-        for block in messages[idx]["content"]:
-            if (
-                isinstance(block, dict)
-                and block.get("type") == "tool_result"
-                and isinstance(block.get("content"), str)
-                and len(block["content"]) > threshold
-            ):
-                stub = f"[compacted: {len(block['content'])} chars elided]"
-                new_content.append({**block, "content": stub})
-            else:
-                new_content.append(block)
-        messages[idx]["content"] = new_content
 
 
 @dataclass
@@ -108,25 +81,27 @@ class AgentCore:
     def __init__(
         self,
         *,
-        model: str = MODEL_NAME,
         system_prompt: str = SYSTEM_PROMPT,
         short_memory_path: str | None = None,
-        short_memory_token_budget: int = 3000,
-        max_iterations: int = 30,
-        max_tokens_per_call: int = 4096,
-        client: anthropic.Anthropic | None = None,
+        short_memory_token_budget: int = SHORT_MEMORY_TOKEN_BUDGET,
+        max_iterations: int = MAX_ITERATIONS,
+        max_tokens_per_call: int = MAX_TOKENS_PER_CALL,
+        llm: LLMClient | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
+        token_threshold: int = TOKEN_THRESHOLD,
     ) -> None:
-        self.model = model
+
         self.system_prompt = system_prompt
-        self.short_memory_path = short_memory_path or os.environ.get(
-            "RICH_SENPAI_SHORT_MEM", "short_memory.md"
-        )
+        self.short_memory_path = short_memory_path or SHORT_MEMORY_PATH
         self.short_memory_token_budget = short_memory_token_budget
         self.max_iterations = max_iterations
         self.max_tokens_per_call = max_tokens_per_call
-        self.client = client or anthropic.Anthropic()
+        self.llm = llm or build_default_client()
+        # Share the same LLM with subagent / teammate calls.
+        state.set_llm(self.llm)
         self.on_event = on_event
+        self.token_threshold = token_threshold
+        self._rounds_without_todo = 0
 
     def close(self) -> None:
         pass
@@ -148,10 +123,108 @@ class AgentCore:
             print(f"[tool_result {i}]\n{event['output']}\n")
         elif kind == "wait":
             print(f"[wait] iteration {i}, exiting cycle")
+        elif kind == "compact":
+            print(f"[compact] {event.get('reason', '')}")
+        elif kind == "background_drain":
+            print(f"[background] {len(event['notifications'])} notification(s)")
+        elif kind == "inbox_drain":
+            print(f"[inbox] {len(event['messages'])} message(s)")
+
+    # ----- pre-LLM hooks -----------------------------------------------------
+
+    def _drain_background(self, messages: list[Message]) -> None:
+        notifs = state.BG.drain()
+        if not notifs:
+            return
+        text = "\n".join(
+            f"[bg:{n['task_id']}] {n['status']}: {n['result']}" for n in notifs
+        )
+        messages.append(
+            Message(
+                role="user",
+                content=[TextBlock(text=f"<background-results>\n{text}\n</background-results>")],
+            )
+        )
+        self._emit({"type": "background_drain", "notifications": notifs})
+
+    def _drain_inbox(self, messages: list[Message]) -> None:
+        inbox = state.BUS.read_inbox(state.LEAD_NAME)
+        if not inbox:
+            return
+        messages.append(
+            Message(
+                role="user",
+                content=[TextBlock(text=f"<inbox>{json.dumps(inbox, indent=2)}</inbox>")],
+            )
+        )
+        self._emit({"type": "inbox_drain", "messages": inbox})
+
+    def _maybe_auto_compact(self, messages: list[Message]) -> None:
+        if estimate_tokens(messages) <= self.token_threshold:
+            return
+        self._emit({"type": "compact", "reason": "auto threshold"})
+        messages[:] = auto_compact(messages, llm=self.llm, system=self.system_prompt)
+
+    def _maybe_add_load_skill_prompt(self, user_input: str) -> str:
+        """If the user starts the message with `/<skill-name>`, look up that
+        skill in `state.SKILLS` and inject its body directly into the user
+        message so the model has the skill content in context before it
+        replies. Doing this client-side (instead of relying on the model to
+        call the load_skill tool) makes the skill load deterministic.
+
+        Examples:
+          "/commit"            -> "<skill name='commit'>...</skill>\\n"
+          "/commit fix typo"   -> "<skill name='commit'>...</skill>\\n\\nfix typo"
+          "/unknown anything"  -> unchanged (no matching skill registered)
+          "ordinary message"   -> unchanged
+        """
+        stripped = user_input.lstrip()
+        if not stripped.startswith("/"):
+            return user_input
+
+        # Pull the first token after the leading slash.
+        head, _, tail = stripped[1:].partition(" ")
+        skill_name = head.strip()
+        if not skill_name:
+            return user_input
+
+        skill = state.SKILLS.skills.get(skill_name)
+        if skill is None:
+            # Not a known skill — leave the slash command alone (might be
+            # something else, e.g. a typo the user can re-issue).
+            return user_input
+
+        body = str(skill.get("body", "")).strip()
+        rest = tail.strip()
+        # Surface the load through the same event channel the load_skill
+        # tool uses, so the TUI's skill-loaded banner fires.
+        self._emit({
+            "type": "tool_use",
+            "iteration": -1,
+            "id": f"sk_{skill_name}",
+            "name": "load_skill",
+            "input": {"name": skill_name},
+        })
+        # Mark the matching tool_result as suppressed by emitting a fake
+        # one with a dummy id so the TUI can correlate.
+        self._emit({
+            "type": "tool_result",
+            "iteration": -1,
+            "id": f"sk_{skill_name}",
+            "name": "load_skill",
+            "output": "(loaded client-side)",
+        })
+
+        injected = f"<skill name=\"{skill_name}\">\n{body}\n</skill>"
+        if rest:
+            return f"{injected}\n\n{rest}"
+        return injected
+
+    # ----- public API --------------------------------------------------------
 
     def run_turn(
         self,
-        messages: list[dict[str, Any]],
+        messages: list[Message],
         user_input: str,
     ) -> CycleResult:
         """Run one ReAct loop on a persistent messages list. Mutates in place.
@@ -162,11 +235,15 @@ class AgentCore:
         preserved across cycles. No audit logging — callers wanting durable
         per-turn rows should use run_cycle instead.
         """
+
+        # if user input is start with "/{skill-name}"
+        user_input = self._maybe_add_load_skill_prompt(user_input)
+
         if not messages:
             initial = self._build_initial_user_message(user_input)
-            messages.append({"role": "user", "content": initial})
+            messages.append(Message(role="user", content=[TextBlock(text=initial)]))
         else:
-            messages.append({"role": "user", "content": user_input})
+            messages.append(Message(role="user", content=[TextBlock(text=user_input)]))
 
         tool_calls: list[ToolCall] = []
         final_text_parts: list[str] = []
@@ -174,28 +251,34 @@ class AgentCore:
         total_out = 0
 
         for i in range(self.max_iterations):
-            _micro_compact_tool_results(messages, keep_recent=1)
+            microcompact(messages, keep_recent=1)
+            self._maybe_auto_compact(messages)
+            self._drain_background(messages)
+            self._drain_inbox(messages)
 
-            response = self.client.messages.create(
-                model=self.model,
+            # Tell the UI we're about to block on the model so the spinner can
+            # flip away from the previous event ("got tool result", etc.).
+            self._emit({"type": "llm_request", "iteration": i})
+            response = self.llm.create_message(
+                messages=messages,
                 system=self.system_prompt,
                 tools=tool_register.TOOL_SPECS,
-                messages=messages,
                 max_tokens=self.max_tokens_per_call,
             )
+            self._emit({"type": "llm_response", "iteration": i})
 
             total_in += response.usage.input_tokens
             total_out += response.usage.output_tokens
 
             iter_text_parts: list[str] = []
             for block in response.content:
-                if block.type == "text":
+                if isinstance(block, TextBlock):
                     iter_text_parts.append(block.text)
                     self._emit({"type": "assistant_text", "iteration": i, "text": block.text})
             if iter_text_parts:
                 final_text_parts = iter_text_parts
 
-            messages.append({"role": "assistant", "content": response.content})
+            messages.append(Message(role="assistant", content=list(response.content)))
 
             if response.stop_reason != "tool_use":
                 return self._result(
@@ -207,37 +290,26 @@ class AgentCore:
                     total_out,
                 )
 
-            tool_results: list[dict[str, Any]] = []
-            for block in response.content:
-                if block.type != "tool_use":
-                    continue
-                tool_input = dict(block.input) if block.input else {}
-
-                if block.name == "wait":
-                    self._emit({"type": "wait", "iteration": i})
-                    return self._result(
-                        final_text_parts,
-                        "wait",
-                        i + 1,
-                        tool_calls,
-                        total_in,
-                        total_out,
-                    )
-
-                self._emit({"type": "tool_use", "iteration": i, "name": block.name, "input": tool_input})
-                output = tool_register.call_tool(block.name, tool_input)
-                self._emit({"type": "tool_result", "iteration": i, "output": output})
-                tool_calls.append(ToolCall(block.name, tool_input, output))
-
-                tool_results.append(
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
-                        "content": output,
-                    }
+            tool_results, sentinel, used_todo = self._dispatch_tool_uses(
+                response.content, i, tool_calls
+            )
+            if sentinel == "wait":
+                return self._result(
+                    final_text_parts,
+                    "wait",
+                    i + 1,
+                    tool_calls,
+                    total_in,
+                    total_out,
                 )
 
-            messages.append({"role": "user", "content": tool_results})
+            self._maybe_append_todo_nag(tool_results, used_todo)
+
+            messages.append(Message(role="user", content=list(tool_results)))
+
+            if sentinel == "compress":
+                self._emit({"type": "compact", "reason": "manual via compress tool"})
+                messages[:] = auto_compact(messages, llm=self.llm, system=self.system_prompt)
 
         return self._result(
             final_text_parts,
@@ -248,146 +320,77 @@ class AgentCore:
             total_out,
         )
 
-    def run_cycle(self, user_input: str) -> CycleResult:
-        started = datetime.utcnow()
+    # ----- internals ---------------------------------------------------------
 
-        ## init with system prompt
-        initial = self._build_initial_user_message(user_input)
-        messages: list[dict[str, Any]] = [
-            {"role": "user", "content": initial},
-        ]
+    def _dispatch_tool_uses(
+        self,
+        blocks: list[Any],
+        iteration: int,
+        tool_calls: list[ToolCall],
+    ) -> tuple[list[ToolResultBlock], str | None, bool]:
+        """Run every tool_use block in `blocks`. Returns (results, sentinel,
+        used_todo). Sentinel is 'wait' or 'compress' if those names appear,
+        otherwise None — caller handles the side effect."""
+        results: list[ToolResultBlock] = []
+        sentinel: str | None = None
+        used_todo = False
 
-        # init tools
-        tool_calls: list[ToolCall] = []
+        for block in blocks:
+            if not isinstance(block, ToolUseBlock):
+                continue
+            tool_input = dict(block.input) if block.input else {}
 
-        final_text_parts: list[str] = []
-        ## token usage
-        total_in = 0
-        total_out = 0
-        ## loop counts
-        iterations_attempted = 0
-        result: CycleResult | None = None
-        error_text: str | None = None
+            if block.name == "wait":
+                self._emit({"type": "wait", "iteration": iteration})
+                sentinel = "wait"
+                # Stop dispatching further tools — wait is terminal.
+                return results, sentinel, used_todo
 
-        try:
-            for i in range(self.max_iterations):
-                iterations_attempted = i + 1
-                # Micro-compact old tool_results before sending, so context
-                # doesn't balloon across many tool roundtrips.
-                _micro_compact_tool_results(messages, keep_recent=1)
+            self._emit({
+                "type": "tool_use",
+                "iteration": iteration,
+                "id": block.id,
+                "name": block.name,
+                "input": tool_input,
+            })
 
-                # send message to model
-                response = self.client.messages.create(
-                    model=self.model,
-                    system=self.system_prompt,
-                    tools=tool_register.TOOL_SPECS,
-                    messages=messages,
-                    max_tokens=self.max_tokens_per_call,
-                )
+            if block.name == "compress":
+                output = "compressing conversation context..."
+                sentinel = "compress"
+            else:
+                output = tool_register.call_tool(block.name, tool_input)
 
-                # count token usage
-                total_in += response.usage.input_tokens
-                total_out += response.usage.output_tokens
+            self._emit({
+                "type": "tool_result",
+                "iteration": iteration,
+                "id": block.id,
+                "name": block.name,
+                "output": output,
+            })
+            tool_calls.append(ToolCall(block.name, tool_input, output))
+            results.append(ToolResultBlock(tool_use_id=block.id, content=output))
 
-                # llm response text content.
-                iter_text_parts: list[str] = []
+            if block.name == "TodoWrite":
+                used_todo = True
 
-                for block in response.content:
-                    if block.type == "text":
-                        iter_text_parts.append(block.text)
-                        self._emit({"type": "assistant_text", "iteration": i, "text": block.text})
-                if iter_text_parts:
-                    final_text_parts = iter_text_parts
+        return results, sentinel, used_todo
 
-                messages.append({"role": "assistant", "content": response.content})
-
-                if response.stop_reason != "tool_use": # end turn, just return the text content and stop reason.
-                    result = self._result(
-                        final_text_parts,
-                        response.stop_reason or "end_turn",
-                        i + 1,
-                        tool_calls,
-                        total_in,
-                        total_out,
-                    )
-                    return result
-
-                # tool use situations, call the tool and append the result to messages for next iteration.
-                tool_results: list[dict[str, Any]] = []
-                for block in response.content:
-                    if block.type != "tool_use":
-                        continue
-                    tool_input = dict(block.input) if block.input else {}
-
-                    if block.name == "wait":
-                        self._emit({"type": "wait", "iteration": i})
-                        result = self._result(
-                            final_text_parts,
-                            "wait",
-                            i + 1,
-                            tool_calls,
-                            total_in,
-                            total_out,
-                        )
-                        return result
-
-                    self._emit({"type": "tool_use", "iteration": i, "name": block.name, "input": tool_input})
-                    output = tool_register.call_tool(block.name, tool_input)
-
-                    self._emit({"type": "tool_result", "iteration": i, "output": output})
-                    tool_calls.append(ToolCall(block.name, tool_input, output))
-
-                    tool_results.append(
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": block.id,
-                            "content": output,
-                        }
-                    )
-
-                messages.append({"role": "user", "content": tool_results})
-
-            result = self._result(
-                final_text_parts,
-                "max_iterations",
-                self.max_iterations,
-                tool_calls,
-                total_in,
-                total_out,
-            )
-            return result
-
-        except BaseException:
-            # Capture the full traceback for the audit row, then re-raise so
-            # the caller still sees the failure. BaseException covers
-            # KeyboardInterrupt / SystemExit too; we don't suppress, only log.
-            error_text = traceback.format_exc()
-            raise
-
-        finally:
-            ended = datetime.utcnow()
-            if result is None:
-                result = self._result(
-                    final_text_parts,
-                    "error",
-                    iterations_attempted,
-                    tool_calls,
-                    total_in,
-                    total_out,
-                )
-            try:
-                audit.log_cycle(
-                    self._db,
-                    result=result,
-                    messages=messages,
-                    user_input=user_input,
-                    started=started,
-                    ended=ended,
-                    error_text=error_text,
-                )
-            except Exception as audit_exc:
-                # Logging must never mask the real outcome of the cycle.
-                print(f"[warn] audit log failed: {audit_exc}")
+    def _maybe_append_todo_nag(
+        self,
+        results: list[Any],
+        used_todo: bool,
+    ) -> None:
+        if used_todo:
+            self._rounds_without_todo = 0
+            return
+        self._rounds_without_todo += 1
+        if (
+            state.TODO.has_open_items()
+            and self._rounds_without_todo >= TODO_NAG_AFTER_ROUNDS
+        ):
+            # Append as plain text alongside the tool_results — mixing is allowed
+            # in user turns and avoids fabricating a tool_use_id.
+            results.append(TextBlock(text="<reminder>Update your todos.</reminder>"))
 
     def _build_initial_user_message(self, user_input: str) -> str:
         short_mem_text = self._read_short_memory()
