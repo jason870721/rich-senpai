@@ -1,4 +1,4 @@
-from tools import http_request
+from tools import tool_register
 
 if __name__ == '__main__':
-    http_request.http_request()
+    print(tool_register.call_tool("http_request", {"method": "GET", "url": "http://www.baidu.com"}))
