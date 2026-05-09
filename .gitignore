@@ -31,4 +31,10 @@ htmlcov/
 schema_desc.md
 # Agent runtime artifacts
 rich_senpai.db
-short_memory.md
+.senpai/short_memory.md
+.tasks/
+.team/
+.transcripts/
+
+# rich_senpai
+.senpai

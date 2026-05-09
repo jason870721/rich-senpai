@@ -1,6 +1,8 @@
 # bash tool
 import subprocess
 
+from core.config import BASH_DEFAULT_TIMEOUT
+
 
 SPEC = {
     "name": "bash",
@@ -19,7 +21,10 @@ SPEC = {
             },
             "timeout": {
                 "type": "number",
-                "description": "Maximum seconds to wait before killing the command. Defaults to 30.",
+                "description": (
+                    f"Maximum seconds to wait before killing the command. "
+                    f"Defaults to {BASH_DEFAULT_TIMEOUT} (BASH_DEFAULT_TIMEOUT)."
+                ),
             },
             "cwd": {
                 "type": "string",
@@ -31,7 +36,7 @@ SPEC = {
 }
 
 
-def bash(command: str, timeout: float = 30, cwd: str | None = None) -> str:
+def bash(command: str, timeout: float = BASH_DEFAULT_TIMEOUT, cwd: str | None = None) -> str:
     try:
         result = subprocess.run(
             command,

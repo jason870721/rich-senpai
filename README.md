@@ -1,119 +1,167 @@
 # Rich Senpai
 
+> 🍣 An autonomous multi-agent system for trading, built in a day.
+
 <br>
 
 ---
 
 <br>
 
-Building rich-senpai, an autonomous trading agent with arbitrary code execution and full system/database access, is an ambitious and highly complex project.
+## What is this?
 
-Rule Zero for this MVP: 
+Rich Senpai is a **multi-agent trading system** where a lead agent coordinates specialized teammate agents to collaboratively solve tasks — primarily in financial markets, but extensible to any domain.
 
-* You must run this agent inside an isolated Docker container
-* You must start exclusively on a crypto exchange Testnet (paper trading) until it proves profitable and stable.
+### Key features
 
-<br>
+- **Multi-agent architecture** — A lead agent spawns, manages, and communicates with specialized teammate agents via an in-process message bus
+- **Tool ecosystem** — Agents have access to file I/O, shell commands, HTTP requests, git operations, task boards, and more
+- **Skill system** — Load domain-specific knowledge (skills) on demand to augment agent capabilities
+- **TUI interface** — A rich terminal UI for monitoring agent conversations and system state in real-time
+- **Configurable LLM backend** — Plug in Anthropic or Ollama as the LLM provider
+- **File-backed task board** — Shared task persistence survives process restarts; teammates pick up unclaimed tasks automatically
 
-## Phase 1: MVP Architecture & Tech Stack
-
-To keep the MVP lightweight but powerful, you should rely on established Python libraries rather than building from scratch.
-
-* LLM Interface: Use LiteLLM. It standardizes inputs/outputs to the OpenAI format but allows you to plug in Anthropic, Google, local models (Ollama), etc., with a single line of code changes.
-
-* Crypto Exchange Integration: Use CCXT. It supports hundreds of exchanges (Binance, Bybit, OKX) with a unified API for fetching candles, placing orders, and checking balances.
-
-* Database: PostgreSQL. The agent has full control, also we can create a UI to monitor the agent's decision log or progress log.
-
-* Agent Framework: Build a simple custom ReAct (Reasoning and Acting) loop. Heavy frameworks like LangChain can abstract too much away and cause unexpected behaviors in complex financial environments.
-
-<br>
-
-## Phase 2: MVP Development Plan
-
-### Step 1: Tool Construction (The Hands)
-
-Build Python functions for every capability you listed. Each function must have strong error handling returning stringified errors so the LLM knows why a tool failed.
-
-* System Tools: read_file(path), write_file(path, content), bash(command) (use subprocess), exec_py(code) (use exec() capturing stdout).
-
-* Database Tools: db_query(sql_string). Initialize an empty SQLite DB, but let the agent create its own tables via this tool.
-
-* Web Tools: explore_web(query) using DuckDuckGo search API or a simple web scraper.
-
-* Exchange Tools (via CCXT): get_balance(), get_positions(), place_order(symbol, side, amount, price, leverage), cancel_order(order_id).
-
-### Step 2: Memory Management (The Brain)
-
-* Short Term Memory (short_memory.md): Create a dedicated tool: update_short_memory(content). In your main loop, read this file and inject its contents directly into the top of the LLM prompt every cycle. Add a script to monitor its token length (using tiktoken) and force the agent to summarize if it exceeds 3000 tokens.
-
-* Long Term Memory / Logging: The agent will use its db_query tool to log trades. However, you should pre-build an agent_logs table that your Python loop automatically writes to (logging the LLM's raw output, tool calls, and PnL) just in case the agent "forgets" to log.
-
-### Step 3: The Core Loop (The Heartbeat)
-
-* Your Python script will run a continuous loop (e.g., every 5 minutes):
-
-* Fetch current market state (prices, your current positions).
-
-* Read short_memory.md.
-
-* Construct the prompt: System Prompt + Market State + Short Memory.
-
-* Call LLM.
-
-* Parse tool requests from LLM -> Execute Python tools -> Return tool results to LLM.
-
-* Repeat until the LLM outputs a final "Wait" or "Done" command.
-
-* Sleep until the next cycle.
-
-<br>
-
-Phase 3: The System Prompt
-
-This prompt establishes the persona, rules, and tool formatting for the agent. It is designed to be highly directive to prevent the LLM from losing focus.
+### Architecture at a glance
 
 ```
-You are rich-senpai, an elite, autonomous AI trading agent. 
-Your sole objective is to generate consistent, risk-adjusted profit trading cryptocurrency futures. You operate with absolute autonomy. You are relentless, analytical, and heavily rely on data.
-
-# YOUR CAPABILITIES & TOOLS
-You have access to a local SQLite database, a file system, Python execution, bash execution, web search, and direct API access to a crypto exchange. 
-To use a tool, you must output a JSON block formatted EXACTLY like this:
-{"tool": "tool_name", "kwargs": {"param1": "value1"}}
-
-Available Tools:
-- `bash` (command: str) -> Executes shell commands.
-- `exec_py` (code: str) -> Executes Python code and returns standard output.
-- `read_file` (path: str) -> Returns file contents.
-- `write_file` (path: str, content: str) -> Writes to a file.
-- `db_query` (query: str) -> Executes a raw SQL query on your local SQLite database (rich_senpai.db). You may CREATE tables, INSERT, and SELECT.
-- `explore_web` (query: str) -> Searches the internet for news/sentiment.
-- `query_balance` () -> Returns current portfolio balance and margins.
-- `query_positions` () -> Returns current open futures positions.
-- `place_order` (symbol: str, side: str, amount: float, price: float, leverage: int) -> Places a limit/market order. Use price=0 for market orders.
-- `cancel_order` (symbol: str, order_id: str) -> Cancels an open order.
-- `update_short_memory` (markdown_content: str) -> Overwrites your short_memory.md file.
-
-# MEMORY & LOGGING DIRECTIVES
-1. Short-Term Memory: You have a `short_memory.md` file (strictly limited to 3000 tokens). Use `update_short_memory` to write your current market thesis, ongoing trades, and short-term plans. You MUST summarize it if it gets too long.
-2. Long-Term Memory (DB): You are responsible for designing your own database schema. If you haven't already, use `db_query` to CREATE tables for logging your trade decisions, rationales, and PnL. Log EVERY decision you make.
-
-# OPERATING PROCEDURE
-Every time you are invoked, follow this thought process:
-1. Observe: What is your current balance and what positions are open? What is written in your short memory?
-2. Analyze: Do you need to write a Python script via `exec_py` to calculate moving averages, RSI, or fetch recent candles? Do you need to check the news via `explore_web`?
-3. Execute: Place, modify, or cancel orders based on your analysis. Manage risk strictly. Set stop-losses.
-4. Record: Log your actions using `db_query`. Update your `short_memory.md` with what you are waiting for next.
-5. End: If you are done for this cycle and waiting for the market to move, output: {"tool": "wait", "kwargs": {}}
-
-# CRITICAL CONSTRAINTS
-- NEVER risk more than 5% of your total balance on a single trade.
-- NEVER assume a tool worked; always verify the output.
-- You are operating with real leverage. A bad loop will result in liquidation. Be precise.
-- Only output one tool call at a time. Wait for the system to return the result before proceeding.
+main.py (entry point)
+  └── session_tui/tui.py (Textual TUI)
+        └── RichSenpaiAgent (lead agent loop)
+              ├── LLMClient (Anthropic / Ollama)
+              ├── AgentCore (tool execution, ReAct loop)
+              ├── AgentTeam (teammate lifecycle)
+              ├── AgentMessaging (in-process message bus)
+              └── TaskManager (file-backed task board)
 ```
 
-# SDK version
+### How it works
 
-Python 3.14.3
+1. **The lead agent** runs a continuous ReAct loop: observe context → reason → act (call tools) → repeat
+2. **Teammates** are spawned as background workers with their own role, prompt, and ReAct loop
+3. **Communication** happens via a thread-safe in-memory message bus (FIFO per recipient)
+4. **Tools** are registered declaratively via `@Tool(name, description, params)` decorator and executed by the core
+5. **Tasks** are stored as JSON documents on disk, enabling shared work across agents and restarts
+6. **Skills** are Markdown files loaded on demand to inject domain knowledge into agent context
+
+## How to start?
+
+### Prerequisites
+
+- **Python 3.14** (developed on 3.14.3)
+- **API key** for your LLM provider:
+  - Anthropic: `ANTHROPIC_API_KEY` env var, or
+  - Ollama: running `ollama serve` locally
+
+### Quick start
+
+```bash
+# 1. Clone and enter the project
+git clone <repo-url>
+cd rich-senpai
+
+# 2. Create a virtual environment
+python -m venv .venv
+source .venv/bin/activate
+
+# 3. Install dependencies
+pip install -r requirements.txt
+
+# 4. Configure your LLM provider
+cp .env.example .env
+# Edit .env and set:
+#   - LLM_PROVIDER=anthropic (or ollama)
+#   - ANTHROPIC_API_KEY=<your-key>   (if using Anthropic)
+#   - OLLAMA_MODEL=<model-name>       (if using Ollama)
+
+# 5. Run the TUI
+python main.py
+```
+
+### TUI controls
+
+The terminal UI supports keyboard navigation and commands:
+
+| Key | Action |
+|-----|--------|
+| `Tab` / `Shift+Tab` | Switch between panels (Message Log / System Status / Chat) |
+| `1`, `2`, `3` | Jump to panel 1, 2, or 3 |
+| `q` | Quit the application |
+| `Space` | Pause / resume live updates |
+| Arrow keys | Navigate message history |
+| `Enter` | Send chat message |
+
+### Chat commands
+
+Type these in the chat panel:
+
+| Command | Action |
+|---------|--------|
+| `!status` | Show teammate and task board status |
+| `!clear` | Clear message log |
+| `!help` | Show help |
+
+## SDK version
+
+**Python 3.14.3**
+
+## Project structure
+
+```
+rich-senpai/
+├── main.py                     # Entry point
+├── requirements.txt            # Dependencies
+├── .env.example                # Configuration template
+├── .gitignore
+├── README.md                   # This file
+├── .senpai/
+│   └── skills/                 # Loadable skill definitions (Markdown)
+├── core/
+│   ├── __init__.py
+│   ├── agent_core.py           # ReAct loop, tool registry, tool execution
+│   ├── config.py               # Settings from env + YAML config file
+│   ├── llm/
+│   │   ├── __init__.py         # LLMClient base class + build_default_client()
+│   │   ├── base.py             # Abstract LLMClient + response types
+│   │   ├── anthropic_client.py # Anthropic API adapter
+│   │   └── ollama_client.py    # Ollama API adapter
+│   ├── messaging.py            # Thread-safe in-process message bus
+│   ├── skills.py               # Skill loading from .senpai/skills/
+│   ├── tasks_file.py           # File-backed JSON task board
+│   └── team.py                 # Teammate lifecycle management
+└── session_tui/
+    ├── __init__.py
+    ├── tui.py                  # Textual TUI with live log, status, and chat
+    └── theme.py                # Rich ThemedStyle definitions
+```
+
+## Adding a new tool
+
+Tools are registered with the `@tool()` decorator. Each tool is a function with:
+
+1. A docstring that serves as the tool description
+2. An `annotated params` signature (type hints become JSON schema)
+
+```python
+from core.agent_core import tool
+
+@tool
+def hello_world(name: str) -> str:
+    """Print a greeting."""
+    return f"Hello, {name}!"
+```
+
+The tool automatically becomes available to all agents in the system.
+
+## Adding a new skill
+
+Skills live in `.senpai/skills/<skill-name>/SKILL.md`. Each skill is a single Markdown file with:
+
+1. A `# Title` heading (used as the skill name)
+2. Frontmatter `name` field
+3. Sections describing purpose, workflow, rules, and examples
+
+The skill is loaded on demand via the `load_skill` tool, which injects its content into the agent's conversation context.
+
+## License
+
+MIT
