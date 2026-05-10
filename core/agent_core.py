@@ -296,7 +296,7 @@ class AgentCore:
                     final_text_parts, "interrupted", i, tool_calls, total_in, total_out
                 )
 
-            microcompact(messages, keep_recent=1)
+            microcompact(messages, keep_recent=3)
             await self._maybe_auto_compact(messages)
             self._drain_background(messages)
             self._drain_inbox(messages)

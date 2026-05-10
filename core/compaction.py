@@ -28,7 +28,7 @@ TRANSCRIPT_DIR = config.TRANSCRIPT_DIR
 def microcompact(
     messages: list[Message],
     *,
-    keep_recent: int = 1,
+    keep_recent: int = 2,
     threshold: int = 200,
 ) -> None:
     """In place: replace tool_result content in older user turns with a
