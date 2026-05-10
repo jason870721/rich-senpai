@@ -4,6 +4,11 @@ Anything in `core` (and beyond) that needs to talk to a language model goes
 through `LLMClient.create_message`. Concrete providers (Anthropic, OpenAI,
 local, ...) translate between their wire format and the dataclasses defined
 here, so swapping providers is a one-line change at the call site.
+
+`create_message` is async — implementations must use the provider's async
+client (e.g. `anthropic.AsyncAnthropic`, `ollama.AsyncClient`) so that
+cancellation of the awaiting task aborts the in-flight HTTP request, not
+just the post-response processing.
 """
 from __future__ import annotations
 
@@ -58,10 +63,10 @@ class LLMResponse:
 
 
 class LLMClient(ABC):
-    """Minimal chat-completion interface every provider must implement."""
+    """Minimal async chat-completion interface every provider must implement."""
 
     @abstractmethod
-    def create_message(
+    async def create_message(
         self,
         *,
         messages: list[Message],
@@ -73,5 +78,6 @@ class LLMClient(ABC):
 
         `tools` is a list of JSON-schema-style specs (name, description,
         input_schema). Implementations are responsible for translating to
-        their provider's tool format.
+        their provider's tool format. Cancelling the awaiting task must
+        abort the in-flight HTTP request.
         """

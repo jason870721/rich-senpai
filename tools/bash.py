@@ -2,6 +2,7 @@
 import subprocess
 
 from core.config import BASH_DEFAULT_TIMEOUT
+from tools.tool_result import ToolResult
 
 
 SPEC = {
@@ -36,7 +37,17 @@ SPEC = {
 }
 
 
-def bash(command: str, timeout: float = BASH_DEFAULT_TIMEOUT, cwd: str | None = None) -> str:
+def bash(command: str, timeout: float = BASH_DEFAULT_TIMEOUT, cwd: str | None = None) -> ToolResult:
+    """Run a shell command and return a structured result.
+
+    `ok` is True only when the process exited with code 0; non-zero
+    exits, timeouts, and OSError all surface as `ok=False` so the TUI
+    can render the result body in red. Output format:
+
+        exit_code: <N>
+        <stdout, if any>
+        <stderr, if any>
+    """
     try:
         result = subprocess.run(
             command,
@@ -48,12 +59,18 @@ def bash(command: str, timeout: float = BASH_DEFAULT_TIMEOUT, cwd: str | None = 
             cwd=cwd,
         )
     except subprocess.TimeoutExpired:
-        return f"error: command timed out after {timeout}s: {command}"
+        return ToolResult(
+            text=f"error: command timed out after {timeout}s: {command}",
+            ok=False,
+        )
     except OSError as exc:
-        return f"error: could not run command: {exc}"
+        return ToolResult(text=f"error: could not run command: {exc}", ok=False)
 
-    return (
-        f"exit_code: {result.returncode}\n"
-        f"--- stdout ---\n{result.stdout}"
-        f"--- stderr ---\n{result.stderr}"
-    )
+    parts = [f"exit_code: {result.returncode}"]
+    stdout = result.stdout.rstrip()
+    stderr = result.stderr.rstrip()
+    if stdout:
+        parts.append(stdout)
+    if stderr:
+        parts.append(stderr)
+    return ToolResult(text="\n".join(parts), ok=(result.returncode == 0))

@@ -2,12 +2,14 @@
 #
 # Registered in TOOL_SPECS so the model can emit it like any other tool_use
 # block. The agent core checks for this name *before* dispatch, sleeps the
-# requested duration in the worker thread, then continues iterating so the
-# next pre-LLM hooks (background drain, inbox drain, auto-compact) can pick
-# up anything that arrived while we were idle. The handler below should
-# never run in normal operation.
+# requested duration via a cancellable asyncio.sleep, then continues
+# iterating so the next pre-LLM hooks (background drain, inbox drain,
+# auto-compact) can pick up anything that arrived while we were idle. The
+# handler below should never run in normal operation — reaching it means
+# the loop is misconfigured, hence ok=False.
 
 from core.config import WAIT_DEFAULT_SECONDS, WAIT_MAX_SECONDS
+from tools.tool_result import ToolResult
 
 
 SPEC = {
@@ -38,8 +40,11 @@ SPEC = {
 }
 
 
-def wait(seconds: int = WAIT_DEFAULT_SECONDS) -> str:
-    return (
-        "error: wait must be intercepted by the agent core; reaching this "
-        "handler means the loop is misconfigured."
+def wait(seconds: int = WAIT_DEFAULT_SECONDS) -> ToolResult:
+    return ToolResult(
+        text=(
+            "error: wait must be intercepted by the agent core; "
+            "reaching this handler means the loop is misconfigured."
+        ),
+        ok=False,
     )

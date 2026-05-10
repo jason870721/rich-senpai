@@ -1,12 +1,17 @@
 """Subagent worker for the `task` tool (s_full.py s04).
 
-Spawns a short-lived ReAct loop with its own restricted toolset (Explore
-is read-only; general-purpose can also write/edit) and returns the final
-text the model produced. Lives in its own module so agent_core.py
-doesn't have to import the tool layer recursively.
+Spawns a short-lived async ReAct loop with its own restricted toolset
+(Explore is read-only; general-purpose can also write/edit) and returns
+the final text the model produced. Lives in its own module so
+agent_core.py doesn't have to import the tool layer recursively.
+
+Sync handlers run inside `asyncio.to_thread` so the event loop stays
+responsive; async handlers (none today) would just be `await`ed.
 """
 from __future__ import annotations
 
+import asyncio
+import inspect
 from typing import Any
 
 from core.config import SUBAGENT_MAX_ITERATIONS, SUBAGENT_MAX_TOKENS
@@ -23,6 +28,7 @@ from tools import (
     read_file as read_file_tool,
     write_file as write_file_tool,
 )
+from tools.tool_result import as_text
 
 
 _EXPLORE_MODULES = (bash_tool, read_file_tool)
@@ -37,7 +43,7 @@ _HANDLERS = {
 }
 
 
-def run_subagent(
+async def run_subagent(
     prompt: str,
     *,
     llm: LLMClient,
@@ -53,7 +59,7 @@ def run_subagent(
     last_text = ""
 
     for _ in range(max_iterations):
-        response = llm.create_message(
+        response = await llm.create_message(
             messages=messages,
             system=system,
             tools=tools,
@@ -76,12 +82,16 @@ def run_subagent(
             else:
                 kwargs: dict[str, Any] = dict(block.input or {})
                 try:
-                    output = handler(**kwargs)
+                    if inspect.iscoroutinefunction(handler):
+                        raw = await handler(**kwargs)
+                    else:
+                        raw = await asyncio.to_thread(handler, **kwargs)
+                    output = as_text(raw)
                 except TypeError as exc:
                     output = f"error: invalid arguments for '{block.name}': {exc}"
                 except Exception as exc:  # noqa: BLE001
                     output = f"error: {exc}"
-            results.append(ToolResultBlock(tool_use_id=block.id, content=str(output)[:50_000]))
+            results.append(ToolResultBlock(tool_use_id=block.id, content=output[:50_000]))
         messages.append(Message(role="user", content=list(results)))
 
     return last_text or "(no summary)"

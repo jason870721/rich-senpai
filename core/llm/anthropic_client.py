@@ -1,4 +1,10 @@
-"""Anthropic implementation of LLMClient."""
+"""Anthropic implementation of LLMClient (async).
+
+Uses `anthropic.AsyncAnthropic`, whose underlying httpx connection is
+cancelled when the awaiting asyncio task is cancelled — that's how
+mid-generation interrupts actually abort the HTTP request rather than
+waiting for the model to finish.
+"""
 from __future__ import annotations
 
 from typing import Any
@@ -23,12 +29,12 @@ class AnthropicLLMClient(LLMClient):
         self,
         *,
         model: str = MODEL_ID,
-        client: anthropic.Anthropic | None = None,
+        client: anthropic.AsyncAnthropic | None = None,
     ) -> None:
         self.model = model
-        self._client = client or anthropic.Anthropic()
+        self._client = client or anthropic.AsyncAnthropic()
 
-    def create_message(
+    async def create_message(
         self,
         *,
         messages: list[Message],
@@ -37,7 +43,7 @@ class AnthropicLLMClient(LLMClient):
         max_tokens: int,
     ) -> LLMResponse:
         api_messages = [_message_to_api(m) for m in messages]
-        resp = self._client.messages.create(
+        resp = await self._client.messages.create(
             model=self.model,
             system=system,
             tools=tools,

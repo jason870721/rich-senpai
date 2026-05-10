@@ -2,6 +2,7 @@
 import json
 
 from core import state
+from tools.tool_result import ToolResult
 
 
 SPEC = {
@@ -14,5 +15,5 @@ SPEC = {
 }
 
 
-def read_inbox() -> str:
-    return json.dumps(state.BUS.read_inbox(state.LEAD_NAME), indent=2)
+def read_inbox() -> ToolResult:
+    return ToolResult(text=json.dumps(state.BUS.read_inbox(state.LEAD_NAME), indent=2))

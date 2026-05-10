@@ -3,7 +3,10 @@
 # Like `wait`, this is intercepted by the agent core. The agent core
 # notices the tool_use, runs core.compaction.auto_compact on the
 # message list, and returns to the caller. The handler below should
-# never run in normal operation.
+# never run in normal operation — reaching it means the loop is
+# misconfigured, hence ok=False.
+from tools.tool_result import ToolResult
+
 
 SPEC = {
     "name": "compress",
@@ -19,8 +22,11 @@ SPEC = {
 }
 
 
-def compress() -> str:
-    return (
-        "error: compress must be intercepted by the agent core; reaching "
-        "this handler means the loop is misconfigured."
+def compress() -> ToolResult:
+    return ToolResult(
+        text=(
+            "error: compress must be intercepted by the agent core; "
+            "reaching this handler means the loop is misconfigured."
+        ),
+        ok=False,
     )

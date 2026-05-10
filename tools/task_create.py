@@ -1,5 +1,6 @@
 # task_create — create a persistent file-backed task.
 from core import state
+from tools.tool_result import ToolResult
 
 
 SPEC = {
@@ -20,5 +21,5 @@ SPEC = {
 }
 
 
-def task_create(subject: str, description: str = "") -> str:
-    return state.TASK_MGR.create(subject, description)
+def task_create(subject: str, description: str = "") -> ToolResult:
+    return ToolResult(text=state.TASK_MGR.create(subject, description))

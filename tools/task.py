@@ -1,6 +1,7 @@
 # task tool — spawn a subagent to do isolated exploration or work.
 from core import state
 from core.subagent import run_subagent
+from tools.tool_result import ToolResult
 
 
 SPEC = {
@@ -29,5 +30,7 @@ SPEC = {
 }
 
 
-def task(prompt: str, agent_type: str = "Explore") -> str:
-    return run_subagent(prompt, llm=state.get_llm(), agent_type=agent_type)
+async def task(prompt: str, agent_type: str = "Explore") -> ToolResult:
+    return ToolResult(
+        text=await run_subagent(prompt, llm=state.get_llm(), agent_type=agent_type),
+    )

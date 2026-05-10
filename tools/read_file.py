@@ -1,6 +1,8 @@
 # read file tool
 from pathlib import Path
 
+from tools.tool_result import ToolResult
+
 
 SPEC = {
     "name": "read_file",
@@ -26,15 +28,18 @@ SPEC = {
 }
 
 
-def read_file(path: str, encoding: str = "utf-8") -> str:
+def read_file(path: str, encoding: str = "utf-8") -> ToolResult:
     file_path = Path(path).expanduser()
     if not file_path.exists():
-        return f"error: file not found: {path}"
+        return ToolResult(text=f"error: file not found: {path}", ok=False)
     if not file_path.is_file():
-        return f"error: not a regular file: {path}"
+        return ToolResult(text=f"error: not a regular file: {path}", ok=False)
     try:
-        return file_path.read_text(encoding=encoding)
+        return ToolResult(text=file_path.read_text(encoding=encoding))
     except UnicodeDecodeError as exc:
-        return f"error: could not decode {path} as {encoding}: {exc}"
+        return ToolResult(
+            text=f"error: could not decode {path} as {encoding}: {exc}",
+            ok=False,
+        )
     except OSError as exc:
-        return f"error: could not read {path}: {exc}"
+        return ToolResult(text=f"error: could not read {path}: {exc}", ok=False)

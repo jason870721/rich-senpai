@@ -1,5 +1,6 @@
 # load_skill tool — return the markdown body of a registered skill.
 from core import state
+from tools.tool_result import ToolResult
 
 
 SPEC = {
@@ -22,5 +23,8 @@ SPEC = {
 }
 
 
-def load_skill(name: str) -> str:
-    return state.SKILLS.load(name)
+def load_skill(name: str) -> ToolResult:
+    text = state.SKILLS.load(name)
+    # SkillLoader.load returns "error: unknown skill ..." for misses;
+    # branch on the registry directly so the ok flag is authoritative.
+    return ToolResult(text=text, ok=name in state.SKILLS.skills)

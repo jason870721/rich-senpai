@@ -8,10 +8,10 @@ Layout:
   - Input at the bottom; Enter submits, up/down walks history.
   - Footer shows key bindings.
 
-`AgentCore.run_turn` is synchronous and emits events through `on_event`
-while it runs. We run each turn in a Textual worker (thread=True) and
-funnel events back to the UI via `call_from_thread` so widget mutations
-stay on the main thread.
+`AgentCore.run_turn` is async and emits events through `on_event` while
+it runs. We schedule each turn as an asyncio worker on the same loop
+Textual is using; `on_event` callbacks run on that loop too, so widget
+mutations don't need cross-thread hops.
 
 Slash commands:
   /quit | /exit  -> leave (Ctrl+Q works too)
@@ -62,6 +62,7 @@ _ACCENT = "bright_cyan"
 _GOLD = "gold1"
 _SUBTLE = "grey50"
 _OK = "green3"
+_TOOL_USE = "orange3" # or "magenta", "deep_pink3", "pink3"
 
 HELP_TEXT = """\
 [bold]commands[/]
@@ -276,6 +277,11 @@ class SenpaiApp(App):
         # Snapshot of the last all-settled background-tasks set we
         # archived into the log; mirrors _archived_todo_signature.
         self._archived_bg_signature: tuple | None = None
+        # TodoWrite is loud — its tool_use fires every time the agent
+        # tweaks the list. We log only the first call per session so the
+        # user sees that todos are being managed, then defer to the
+        # bottom panel for the live view.
+        self._todowrite_logged = False
 
     def _describe_model(self) -> str:
         """Short string describing the active LLM, e.g. 'ollama · qwen3.6:latest'."""
@@ -427,8 +433,9 @@ class SenpaiApp(App):
         self.query_one("#status", Static).update(line)
 
     def _on_agent_event(self, event: dict[str, Any]) -> None:
-        # Invoked from the worker thread inside agent.run_turn.
-        self.call_from_thread(self._render_event, event)
+        # Agent runs on the same asyncio loop as the UI now, so we can
+        # mutate widgets directly — no thread hop needed.
+        self._render_event(event)
 
     def _render_event(self, event: dict[str, Any]) -> None:
         kind = event.get("type")
@@ -460,12 +467,19 @@ class SenpaiApp(App):
             self._suppress(event.get("id"))
             return
         if name == "TodoWrite":
-            # Bottom panel is the canonical view; don't echo to the log.
+            # The bottom panel is the canonical view, so always suppress
+            # the JSON-blob result body. We only render the tool_use
+            # header on the first call per session as a one-line "todos
+            # are being managed" announcement.
             self._suppress(event.get("id"))
-            return
+            if self._todowrite_logged:
+                return
+            self._todowrite_logged = True
+            # Fall through to render the standard tool_use header line.
+
         args = _format_tool_input(event.get("input") or {})
         head = Text()
-        head.append(name or "?", style=f"bold {_BRAND}")
+        head.append(name or "?", style=f"bold {_TOOL_USE}")
         head.append("(", style="dim")
         head.append(args, style="dim")
         head.append(")", style="dim")
@@ -481,7 +495,14 @@ class SenpaiApp(App):
                 self._refresh_todos()
             return
         output = _truncate(event["output"], TOOL_RESULT_PREVIEW_CHARS)
-        self._write(_bar_block_body(output, glyph="⎿", bar_style=_BRAND, body_style="dim"))
+        # ok defaults to True for older / non-bash tools that haven't been
+        # taught to surface failure. Red is reserved for actual errors.
+        ok = event.get("ok", True)
+        if ok:
+            bar_style, body_style = _BRAND, "dim"
+        else:
+            bar_style, body_style = "red", "red"
+        self._write(_bar_block_body(output, glyph="⎿", bar_style=bar_style, body_style=body_style))
 
     def _render_wait(self, event: dict[str, Any]) -> None:
         self._write(
@@ -604,6 +625,7 @@ class SenpaiApp(App):
                 self._archived_todo_signature = signature
             widget.display = False
             widget.update("")
+            self._todowrite_logged = False # reset for next turn, call TodoWrite will log tool use again.
             return
 
         # Mixed / in-progress list — clear any stale archive marker so the
@@ -710,7 +732,7 @@ class SenpaiApp(App):
         # Single-width glyphs only — wide emojis (📚, ❓) measure as
         # 2 cells in some fonts and 1 in others, which corrupts the
         # surrounding line layout. See module docstring.
-        glyph = "✦" if available else "✕"
+        glyph = "📚" if available else "❓"
         label = "skill loaded" if available else "skill NOT FOUND"
         header = Text()
         header.append(label, style=f"bold {accent}")
@@ -809,8 +831,7 @@ class SenpaiApp(App):
         self.turn_no += 1
         self._set_busy(True)
         self.run_worker(
-            lambda t=text: self._run_turn_blocking(t),
-            thread=True,
+            self._run_turn_async(text),
             exclusive=True,
             name="agent_turn",
         )
@@ -850,13 +871,13 @@ class SenpaiApp(App):
         "/inbox": _cmd_inbox,
     }
 
-    def _run_turn_blocking(self, user_input: str) -> None:
+    async def _run_turn_async(self, user_input: str) -> None:
         try:
-            result = self.agent.run_turn(self.messages, user_input)
-        except Exception as exc:
-            self.call_from_thread(self._on_turn_error, exc)
+            result = await self.agent.run_turn(self.messages, user_input)
+        except Exception as exc:  # noqa: BLE001 -- surface every error to the user
+            self._on_turn_error(exc)
             return
-        self.call_from_thread(self._on_turn_done, result)
+        self._on_turn_done(result)
 
     def _on_turn_done(self, result: CycleResult) -> None:
         self._write_turn_footer(result)
@@ -878,6 +899,7 @@ class SenpaiApp(App):
         self._archived_todo_signature = None
         self._archived_bg_signature = None
         self._last_bg_signature = None
+        self._todowrite_logged = False
         # Wipe the scrolling log, then re-paint the intro so the screen
         # isn't blank. Refresh the docked panels in case TODO/BG state is
         # still live from a prior turn.
@@ -903,7 +925,7 @@ class SenpaiApp(App):
         self._status_label = "interrupting…"
         self._write(
             Text(
-                "⏼  interrupt requested — stopping after the current step",
+                "⏼  interrupt requested — try to interrupt current step",
                 style=f"bold {_GOLD}",
             )
         )
@@ -916,29 +938,28 @@ class SenpaiApp(App):
             self._write(Text("nothing to compact yet.", style="dim"))
             return
         self._write(Text("compacting history…", style="dim"))
-        # Drive the spinner so the user sees motion; the actual LLM call has
-        # to run off the asyncio loop or it will block the UI for seconds and
-        # Textual's watchdog will tear the app down.
+        # Drive the spinner so the user sees motion; the LLM call is awaited
+        # on the same asyncio loop Textual runs on, so the UI stays responsive
+        # while it's in flight.
         self._set_busy(True)
         self._status_label = "compacting context…"
         self.run_worker(
-            self._compact_blocking,
-            thread=True,
+            self._compact_async(),
             exclusive=True,
             name="compact_history",
         )
 
-    def _compact_blocking(self) -> None:
+    async def _compact_async(self) -> None:
         try:
-            new_msgs = auto_compact(
+            new_msgs = await auto_compact(
                 self.messages,
                 llm=self.agent.llm,
                 system=self.agent.system_prompt,
             )
         except Exception as exc:  # noqa: BLE001 — we want every error visible
-            self.call_from_thread(self._on_compact_error, exc)
+            self._on_compact_error(exc)
             return
-        self.call_from_thread(self._on_compact_done, new_msgs)
+        self._on_compact_done(new_msgs)
 
     def _on_compact_done(self, new_msgs) -> None:
         self.messages[:] = new_msgs

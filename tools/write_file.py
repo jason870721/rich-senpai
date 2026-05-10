@@ -1,6 +1,8 @@
 # write file tool
 from pathlib import Path
 
+from tools.tool_result import ToolResult
+
 
 SPEC = {
     "name": "write_file",
@@ -30,11 +32,11 @@ SPEC = {
 }
 
 
-def write_file(path: str, content: str, encoding: str = "utf-8") -> str:
+def write_file(path: str, content: str, encoding: str = "utf-8") -> ToolResult:
     file_path = Path(path).expanduser()
     try:
         file_path.parent.mkdir(parents=True, exist_ok=True)
         bytes_written = file_path.write_text(content, encoding=encoding)
     except OSError as exc:
-        return f"error: could not write {path}: {exc}"
-    return f"wrote {bytes_written} bytes to {path}"
+        return ToolResult(text=f"error: could not write {path}: {exc}", ok=False)
+    return ToolResult(text=f"wrote {bytes_written} bytes to {path}")
