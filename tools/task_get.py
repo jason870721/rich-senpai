@@ -1,5 +1,6 @@
 # task_get — fetch a task from the file-backed board.
 from core import state
+from tools.tool_result import ToolResult
 
 
 SPEC = {
@@ -13,8 +14,8 @@ SPEC = {
 }
 
 
-def task_get(task_id: int) -> str:
+def task_get(task_id: int) -> ToolResult:
     try:
-        return state.TASK_MGR.get(int(task_id))
+        return ToolResult(text=state.TASK_MGR.get(int(task_id)))
     except ValueError as exc:
-        return f"error: {exc}"
+        return ToolResult(text=f"error: {exc}", ok=False)

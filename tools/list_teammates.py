@@ -1,5 +1,6 @@
 # list_teammates — show every teammate and their current status.
 from core import state
+from tools.tool_result import ToolResult
 
 
 SPEC = {
@@ -9,5 +10,5 @@ SPEC = {
 }
 
 
-def list_teammates() -> str:
-    return state.get_team().list_all()
+def list_teammates() -> ToolResult:
+    return ToolResult(text=state.get_team().list_all())

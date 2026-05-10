@@ -1,6 +1,7 @@
 # background_run tool — fire a shell command without blocking the agent loop.
 from core import state
 from core.config import BG_DEFAULT_TIMEOUT
+from tools.tool_result import ToolResult
 
 
 SPEC = {
@@ -33,5 +34,8 @@ SPEC = {
 }
 
 
-def background_run(command: str, timeout: int = BG_DEFAULT_TIMEOUT) -> str:
-    return state.BG.run(command, timeout=timeout)
+def background_run(command: str, timeout: int = BG_DEFAULT_TIMEOUT) -> ToolResult:
+    # Failure of the spawned command itself surfaces later via a
+    # background-results notification; this call only kicks off the
+    # worker thread and is effectively always successful.
+    return ToolResult(text=state.BG.run(command, timeout=timeout))

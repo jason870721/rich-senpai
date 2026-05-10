@@ -1,6 +1,8 @@
 # edit_file tool — replace one occurrence of old_text with new_text.
 from pathlib import Path
 
+from tools.tool_result import ToolResult
+
 
 SPEC = {
     "name": "edit_file",
@@ -39,21 +41,21 @@ def edit_file(
     old_text: str,
     new_text: str,
     encoding: str = "utf-8",
-) -> str:
+) -> ToolResult:
     file_path = Path(path).expanduser()
     if not file_path.exists():
-        return f"error: file not found: {path}"
+        return ToolResult(text=f"error: file not found: {path}", ok=False)
     if not file_path.is_file():
-        return f"error: not a regular file: {path}"
+        return ToolResult(text=f"error: not a regular file: {path}", ok=False)
     try:
         contents = file_path.read_text(encoding=encoding)
     except (OSError, UnicodeDecodeError) as exc:
-        return f"error: could not read {path}: {exc}"
+        return ToolResult(text=f"error: could not read {path}: {exc}", ok=False)
     if old_text not in contents:
-        return f"error: old_text not found in {path}"
+        return ToolResult(text=f"error: old_text not found in {path}", ok=False)
     updated = contents.replace(old_text, new_text, 1)
     try:
         file_path.write_text(updated, encoding=encoding)
     except OSError as exc:
-        return f"error: could not write {path}: {exc}"
-    return f"edited {path}"
+        return ToolResult(text=f"error: could not write {path}: {exc}", ok=False)
+    return ToolResult(text=f"edited {path}")

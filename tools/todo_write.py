@@ -2,6 +2,7 @@
 from typing import Any
 
 from core import state
+from tools.tool_result import ToolResult
 
 
 SPEC = {
@@ -41,8 +42,8 @@ SPEC = {
 }
 
 
-def todo_write(items: list[dict[str, Any]]) -> str:
+def todo_write(items: list[dict[str, Any]]) -> ToolResult:
     try:
-        return state.TODO.update(items)
+        return ToolResult(text=state.TODO.update(items))
     except ValueError as exc:
-        return f"error: {exc}"
+        return ToolResult(text=f"error: {exc}", ok=False)

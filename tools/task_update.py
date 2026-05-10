@@ -1,5 +1,6 @@
 # task_update — update status / dependencies of a file-backed task.
 from core import state
+from tools.tool_result import ToolResult
 
 
 SPEC = {
@@ -36,13 +37,15 @@ def task_update(
     status: str | None = None,
     add_blocked_by: list[int] | None = None,
     remove_blocked_by: list[int] | None = None,
-) -> str:
+) -> ToolResult:
     try:
-        return state.TASK_MGR.update(
-            int(task_id),
-            status=status,
-            add_blocked_by=add_blocked_by,
-            remove_blocked_by=remove_blocked_by,
+        return ToolResult(
+            text=state.TASK_MGR.update(
+                int(task_id),
+                status=status,
+                add_blocked_by=add_blocked_by,
+                remove_blocked_by=remove_blocked_by,
+            ),
         )
     except ValueError as exc:
-        return f"error: {exc}"
+        return ToolResult(text=f"error: {exc}", ok=False)

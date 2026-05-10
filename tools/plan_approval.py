@@ -1,6 +1,7 @@
 # plan_approval — approve or reject a teammate's plan.
 from core import state
 from core.messaging import plan_requests
+from tools.tool_result import ToolResult
 
 
 SPEC = {
@@ -22,10 +23,13 @@ SPEC = {
 }
 
 
-def plan_approval(request_id: str, approve: bool, feedback: str = "") -> str:
+def plan_approval(request_id: str, approve: bool, feedback: str = "") -> ToolResult:
     req = plan_requests.get(request_id)
     if not req:
-        return f"error: unknown plan request_id '{request_id}'"
+        return ToolResult(
+            text=f"error: unknown plan request_id '{request_id}'",
+            ok=False,
+        )
     req["status"] = "approved" if approve else "rejected"
     state.BUS.send(
         state.LEAD_NAME,
@@ -38,4 +42,4 @@ def plan_approval(request_id: str, approve: bool, feedback: str = "") -> str:
             "feedback": feedback,
         },
     )
-    return f"Plan {req['status']} for '{req['from']}'"
+    return ToolResult(text=f"Plan {req['status']} for '{req['from']}'")

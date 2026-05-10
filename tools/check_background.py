@@ -1,5 +1,6 @@
 # check_background tool — inspect background task status.
 from core import state
+from tools.tool_result import ToolResult
 
 
 SPEC = {
@@ -20,5 +21,10 @@ SPEC = {
 }
 
 
-def check_background(task_id: str | None = None) -> str:
-    return state.BG.check(task_id)
+def check_background(task_id: str | None = None) -> ToolResult:
+    text = state.BG.check(task_id)
+    # BackgroundManager.check uses an "Unknown background task: <id>"
+    # sentinel for missing ids — surface that as a failed lookup so
+    # the TUI flags it red.
+    ok = not text.startswith("Unknown background task")
+    return ToolResult(text=text, ok=ok)

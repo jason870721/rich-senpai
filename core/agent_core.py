@@ -1,9 +1,10 @@
-"""Agent core — one ReAct loop per user turn.
+"""Agent core — one async ReAct loop per user turn.
 
-`AgentCore.run_turn(messages, user_input)` mutates the supplied message
-list in place and returns a `CycleResult`. On the first call (empty
-messages) the user input is wrapped with the short-memory scratchpad;
-later calls just append it raw so prior turns stay in context.
+`AgentCore.run_turn(messages, user_input)` is a coroutine that mutates
+the supplied message list in place and returns a `CycleResult`. On the
+first call (empty messages) the user input is wrapped with the
+short-memory scratchpad; later calls just append it raw so prior turns
+stay in context.
 
 The loop, per iteration:
 
@@ -12,14 +13,20 @@ The loop, per iteration:
   2. Drain hooks — pending background-task results and inbox messages
      are appended as user turns so the model sees them next call.
   3. LLM call — every registered tool is exposed via `tools.tool_register`.
-  4. Tool dispatch — special tools are intercepted (`wait` sleeps and
-     re-iterates; `compress` triggers `auto_compact`); everything else
-     goes through `tool_register.call_tool`.
+     The call is awaited as a tracked `asyncio.Task` so
+     `request_interrupt()` can cancel the in-flight HTTP request rather
+     than waiting for the model to finish generating.
+  4. Tool dispatch — special tools are intercepted (`wait` sleeps via
+     a cancellable `asyncio.sleep` and re-iterates; `compress` triggers
+     `auto_compact`); everything else goes through `tool_register.call_tool`,
+     which awaits async handlers directly and runs sync handlers on a
+     worker thread.
 
-Stops when the model returns without tool_use, or when `max_iterations`
-is reached. Stateful managers (todos, background, inbox, skills, tasks,
-team) live as singletons in `core.state` so tools, the loop, and the
-TUI all share one view.
+Stops when the model returns without tool_use, when `max_iterations`
+is reached, or when interrupted (LLM call cancelled, or `_interrupt`
+flag observed at an iteration boundary). Stateful managers (todos,
+background, inbox, skills, tasks, team) live as singletons in
+`core.state` so tools, the loop, and the TUI all share one view.
 
 LLM access is provider-neutral: any `core.llm.LLMClient` implementation
 can be injected via the `llm` argument; the default is built from
@@ -27,9 +34,8 @@ can be injected via the `llm` argument; the default is built from
 """
 from __future__ import annotations
 
+import asyncio
 import json
-import threading
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -125,24 +131,34 @@ class AgentCore:
         self.on_event = on_event
         self.token_threshold = token_threshold
         self._rounds_without_todo = 0
-        # Cooperative cancel — set from the UI thread (esc to interrupt),
-        # checked at each ReAct iteration boundary. We can't preempt the
-        # in-flight LLM HTTP call, but we can short-circuit before the
-        # next one or before tool dispatch.
-        self._interrupt = threading.Event()
+        # Cooperative cancel — set from the UI when the user hits Esc.
+        # Checked at iteration boundaries so we bail out cleanly between
+        # ReAct steps even when no async op is currently in flight.
+        self._interrupt = asyncio.Event()
+        # Whatever cancellable async op is currently in flight (LLM call
+        # or `wait` sleep). `request_interrupt` cancels this task so the
+        # HTTP request / sleep aborts mid-flight rather than running to
+        # completion.
+        self._current_task: asyncio.Task[Any] | None = None
 
     def close(self) -> None:
         pass
 
     def request_interrupt(self) -> None:
-        """Signal that the current run_turn should stop at the next safe
+        """Signal that the current run_turn should stop. Cancels the
+        in-flight LLM call (or `wait` sleep) so the HTTP request aborts
+        mid-generation; otherwise observed at the next ReAct iteration
         boundary. Idempotent; cleared automatically when run_turn starts."""
         self._interrupt.set()
+        task = self._current_task
+        if task is not None and not task.done():
+            task.cancel()
 
     def _emit(self, event: dict[str, Any]) -> None:
         """Forward a structured event to the on_event callback if set,
         otherwise fall back to the original print() formatting so callers
         that don't pass on_event see identical output."""
+        # this on event will send event to tui (display).
         if self.on_event is not None:
             self.on_event(event)
             return
@@ -192,11 +208,11 @@ class AgentCore:
         )
         self._emit({"type": "inbox_drain", "messages": inbox})
 
-    def _maybe_auto_compact(self, messages: list[Message]) -> None:
+    async def _maybe_auto_compact(self, messages: list[Message]) -> None:
         if estimate_tokens(messages) <= self.token_threshold:
             return
         self._emit({"type": "compact", "reason": "auto threshold"})
-        messages[:] = auto_compact(messages, llm=self.llm, system=self.system_prompt)
+        messages[:] = await auto_compact(messages, llm=self.llm, system=self.system_prompt)
 
     def _maybe_add_load_skill_prompt(self, user_input: str) -> str:
         """
@@ -241,18 +257,17 @@ class AgentCore:
 
     # ----- public API --------------------------------------------------------
 
-    def run_turn(
+    async def run_turn(
         self,
         messages: list[Message],
         user_input: str,
     ) -> CycleResult:
-        """Run one ReAct loop on a persistent messages list. Mutates in place.
+        """Run one async ReAct loop on a persistent messages list.
 
-        First turn (empty list): user_input is wrapped with short memory and
-        market-state framing via _build_initial_user_message. Subsequent
-        turns: user_input is appended raw so prior conversation context is
-        preserved across cycles. No audit logging — callers wanting durable
-        per-turn rows should use run_cycle instead.
+        First turn (empty list): user_input is wrapped with short memory
+        and market-state framing via _build_initial_user_message.
+        Subsequent turns: user_input is appended raw so prior conversation
+        context is preserved across cycles. Mutates `messages` in place.
         """
 
         # if user input is start with "/{skill-name}"
@@ -261,6 +276,7 @@ class AgentCore:
         # Reset cancel state — a new turn always starts uninterrupted.
         # request_interrupt() flipped between turns is intentionally ignored.
         self._interrupt.clear()
+        self._current_task = None
 
         if not messages:
             initial = self._build_initial_user_message(user_input)
@@ -279,20 +295,43 @@ class AgentCore:
                 return self._result(
                     final_text_parts, "interrupted", i, tool_calls, total_in, total_out
                 )
+
             microcompact(messages, keep_recent=1)
-            self._maybe_auto_compact(messages)
+            await self._maybe_auto_compact(messages)
             self._drain_background(messages)
             self._drain_inbox(messages)
 
             # Tell the UI we're about to block on the model so the spinner can
             # flip away from the previous event ("got tool result", etc.).
             self._emit({"type": "llm_request", "iteration": i})
-            response = self.llm.create_message(
-                messages=messages,
-                system=self.system_prompt,
-                tools=tool_register.TOOL_SPECS,
-                max_tokens=self.max_tokens_per_call,
-            )
+            try:
+                response = await self._await_llm(
+                    messages=messages,
+                    system=self.system_prompt,
+                    tools=tool_register.TOOL_SPECS,
+                    max_tokens=self.max_tokens_per_call,
+                )
+            except asyncio.CancelledError:
+                if self._interrupt.is_set():
+                    self._emit({"type": "interrupted", "iteration": i, "stage": "llm_call"})
+                    return self._result(
+                        final_text_parts, "interrupted", i + 1, tool_calls, total_in, total_out
+                    )
+                # Cancellation we didn't initiate (e.g. worker teardown)
+                # — let it propagate so callers can clean up.
+                raise
+
+            # Interrupt requested between LLM response and tool dispatch?
+            # Skip dispatch — the user wanted us to stop, not run more
+            # side effects. Drop the assistant turn entirely so the
+            # message list stays valid (no orphan tool_use without
+            # matching tool_result).
+            if self._interrupt.is_set():
+                self._emit({"type": "interrupted", "iteration": i, "stage": "pre_tool_dispatch"})
+                return self._result(
+                    final_text_parts, "interrupted", i + 1, tool_calls, total_in, total_out
+                )
+
             self._emit({"type": "llm_response", "iteration": i})
 
             total_in += response.usage.input_tokens
@@ -318,15 +357,7 @@ class AgentCore:
                     total_out,
                 )
 
-            # Interrupt requested while the LLM was generating? Skip tool
-            # dispatch — the user wanted us to stop, not run more side effects.
-            if self._interrupt.is_set():
-                self._emit({"type": "interrupted", "iteration": i, "stage": "pre_tool_dispatch"})
-                return self._result(
-                    final_text_parts, "interrupted", i + 1, tool_calls, total_in, total_out
-                )
-
-            tool_results, sentinel, used_todo = self._dispatch_tool_uses(
+            tool_results, sentinel, used_todo = await self._dispatch_tool_uses(
                 response.content, i, tool_calls
             )
 
@@ -336,7 +367,7 @@ class AgentCore:
 
             if sentinel == "compress":
                 self._emit({"type": "compact", "reason": "manual via compress tool"})
-                messages[:] = auto_compact(messages, llm=self.llm, system=self.system_prompt)
+                messages[:] = await auto_compact(messages, llm=self.llm, system=self.system_prompt)
 
         return self._result(
             final_text_parts,
@@ -349,7 +380,32 @@ class AgentCore:
 
     # ----- internals ---------------------------------------------------------
 
-    def _dispatch_tool_uses(
+    async def _await_llm(
+        self,
+        *,
+        messages: list[Message],
+        system: str,
+        tools: list[dict[str, Any]],
+        max_tokens: int,
+    ):
+        """Issue an LLM call as a tracked Task so request_interrupt can
+        cancel the in-flight HTTP request mid-generation. Returns the
+        provider's `LLMResponse`."""
+        task = asyncio.create_task(
+            self.llm.create_message(
+                messages=messages,
+                system=system,
+                tools=tools,
+                max_tokens=max_tokens,
+            )
+        )
+        self._current_task = task
+        try:
+            return await task
+        finally:
+            self._current_task = None
+
+    async def _dispatch_tool_uses(
         self,
         blocks: list[Any],
         iteration: int,
@@ -360,8 +416,9 @@ class AgentCore:
         Returns ``(results, sentinel, used_todo)`` where ``sentinel`` is
         ``"compress"`` if that tool was called this turn (the caller
         runs auto_compact after the user-turn ack) and ``None``
-        otherwise. ``wait`` is handled inline — it sleeps in this thread
-        and emits a synthetic tool_result — and never sets a sentinel.
+        otherwise. ``wait`` is handled inline — it sleeps via a
+        cancellable `asyncio.sleep` and emits a synthetic tool_result —
+        and never sets a sentinel.
         """
         results: list[ToolResultBlock] = []
         sentinel: str | None = None
@@ -373,7 +430,7 @@ class AgentCore:
             tool_input = dict(block.input) if block.input else {}
 
             if block.name == "wait":
-                self._handle_wait(block, tool_input, iteration, tool_calls, results)
+                await self._handle_wait(block, tool_input, iteration, tool_calls, results)
                 continue
 
             self._emit({
@@ -385,27 +442,30 @@ class AgentCore:
             })
 
             if block.name == "compress":
-                output = "compressing conversation context..."
+                tool_result = tool_register.ToolResult(
+                    text="compressing conversation context...", ok=True
+                )
                 sentinel = "compress"
             else:
-                output = tool_register.call_tool(block.name, tool_input)
+                tool_result = await tool_register.call_tool(block.name, tool_input)
 
             self._emit({
                 "type": "tool_result",
                 "iteration": iteration,
                 "id": block.id,
                 "name": block.name,
-                "output": output,
+                "output": tool_result.text,
+                "ok": tool_result.ok,
             })
-            tool_calls.append(ToolCall(block.name, tool_input, output))
-            results.append(ToolResultBlock(tool_use_id=block.id, content=output))
+            tool_calls.append(ToolCall(block.name, tool_input, tool_result.text))
+            results.append(ToolResultBlock(tool_use_id=block.id, content=tool_result.text))
 
             if block.name == "TodoWrite":
                 used_todo = True
 
         return results, sentinel, used_todo
 
-    def _handle_wait(
+    async def _handle_wait(
         self,
         block: ToolUseBlock,
         tool_input: dict[str, Any],
@@ -413,9 +473,16 @@ class AgentCore:
         tool_calls: list[ToolCall],
         results: list[ToolResultBlock],
     ) -> None:
-        """Sleep for the requested duration, then emit a synthetic
-        tool_result so the next iteration's pre-LLM hooks (background /
-        inbox drain) get a chance to land fresh data."""
+        """Sleep for the requested duration via a tracked
+        `asyncio.sleep`, then emit a synthetic tool_result so the next
+        iteration's pre-LLM hooks (background / inbox drain) get a
+        chance to land fresh data.
+
+        If `request_interrupt` cancels the sleep mid-flight, we emit a
+        "wait cancelled" tool_result and let the loop continue — the
+        pre-iteration check on the next pass observes `_interrupt` and
+        bails cleanly with valid conversation state.
+        """
         seconds = _coerce_seconds(tool_input.get("seconds"))
         self._emit({
             "type": "wait",
@@ -423,17 +490,35 @@ class AgentCore:
             "id": block.id,
             "seconds": seconds,
         })
-        time.sleep(seconds)
-        output = (
-            f"slept {seconds}s — re-iterating; pre-LLM hooks will drain "
-            f"background results / inbox before the next call."
-        )
+        sleep_task = asyncio.create_task(asyncio.sleep(seconds))
+        self._current_task = sleep_task
+        interrupted_mid_sleep = False
+        try:
+            await sleep_task
+        except asyncio.CancelledError:
+            if not self._interrupt.is_set():
+                raise
+            interrupted_mid_sleep = True
+        finally:
+            self._current_task = None
+
+        if interrupted_mid_sleep:
+            output = (
+                f"wait cancelled by user before {seconds}s elapsed; "
+                f"the agent will stop at the next iteration boundary."
+            )
+        else:
+            output = (
+                f"slept {seconds}s — re-iterating; pre-LLM hooks will drain "
+                f"background results / inbox before the next call."
+            )
         self._emit({
             "type": "tool_result",
             "iteration": iteration,
             "id": block.id,
             "name": "wait",
             "output": output,
+            "ok": True,
         })
         tool_calls.append(ToolCall(block.name, tool_input, output))
         results.append(ToolResultBlock(tool_use_id=block.id, content=output))

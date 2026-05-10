@@ -2,6 +2,7 @@
 import requests
 
 from core.config import HTTP_DEFAULT_TIMEOUT
+from tools.tool_result import ToolResult
 
 
 SPEC = {
@@ -54,7 +55,7 @@ def http_request(
     json_body: dict | None = None,
     text_body: str | None = None,
     timeout: float = HTTP_DEFAULT_TIMEOUT,
-) -> str:
+) -> ToolResult:
     try:
         response = requests.request(
             method=method.upper(),
@@ -65,11 +66,15 @@ def http_request(
             timeout=timeout,
         )
     except requests.RequestException as exc:
-        return f"error: request failed: {exc}"
+        return ToolResult(text=f"error: request failed: {exc}", ok=False)
 
     header_lines = "\n".join(f"{k}: {v}" for k, v in response.headers.items())
-    return (
+    text = (
         f"status: {response.status_code}\n"
         f"--- headers ---\n{header_lines}\n"
         f"--- body ---\n{response.text}"
     )
+    # 2xx and 3xx are conventional success / redirect; 4xx-5xx surface
+    # as failures so the TUI can flag them red while the model still
+    # sees the full response.
+    return ToolResult(text=text, ok=200 <= response.status_code < 400)

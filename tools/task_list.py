@@ -1,5 +1,6 @@
 # task_list — list every file-backed task.
 from core import state
+from tools.tool_result import ToolResult
 
 
 SPEC = {
@@ -9,5 +10,5 @@ SPEC = {
 }
 
 
-def task_list() -> str:
-    return state.TASK_MGR.list_all()
+def task_list() -> ToolResult:
+    return ToolResult(text=state.TASK_MGR.list_all())

@@ -1,8 +1,12 @@
-"""Ollama implementation of LLMClient.
+"""Ollama implementation of LLMClient (async).
 
 Talks to a local (or remote) Ollama server via the official `ollama`
-Python SDK. Translates between our provider-neutral Message/ContentBlock
-shapes and the OpenAI-style chat protocol Ollama exposes.
+Python SDK's `AsyncClient`. Translates between our provider-neutral
+Message/ContentBlock shapes and the OpenAI-style chat protocol Ollama
+exposes.
+
+Cancelling the awaiting task cancels the underlying httpx request so
+mid-generation interrupts abort the HTTP call.
 
 Tool calling notes:
   * `tools` are JSON-Schema specs in the same shape Anthropic uses
@@ -45,12 +49,12 @@ class OllamaLLMClient(LLMClient):
         *,
         model: str | None = None,
         host: str | None = None,
-        client: ollama.Client | None = None,
+        client: ollama.AsyncClient | None = None,
     ) -> None:
         self.model = model or config.MODEL_ID
-        self._client = client or ollama.Client(host=host or config.OLLAMA_HOST)
+        self._client = client or ollama.AsyncClient(host=host or config.OLLAMA_HOST)
 
-    def create_message(
+    async def create_message(
         self,
         *,
         messages: list[Message],
@@ -60,7 +64,7 @@ class OllamaLLMClient(LLMClient):
     ) -> LLMResponse:
         ollama_messages = self._messages_to_api(messages, system)
         ollama_tools = [_tool_spec_to_api(t) for t in tools] if tools else None
-        resp = self._client.chat(
+        resp = await self._client.chat(
             model=self.model,
             messages=ollama_messages,
             tools=ollama_tools,

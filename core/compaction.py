@@ -62,7 +62,7 @@ def estimate_tokens(messages: list[Message]) -> int:
     return len(serial) // 4
 
 
-def auto_compact(
+async def auto_compact(
     messages: list[Message],
     *,
     llm: LLMClient,
@@ -79,7 +79,7 @@ def auto_compact(
             f.write(json.dumps({"role": m.role, "content": _serialize_blocks(m.content)}, default=str) + "\n")
 
     conv_text = json.dumps(_serialize(messages), default=str)[-80_000:]
-    summary_resp = llm.create_message(
+    summary_resp = await llm.create_message(
         messages=[Message(role="user", content=[TextBlock(text=f"Summarize for continuity:\n{conv_text}")])],
         system=system,
         tools=[],

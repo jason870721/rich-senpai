@@ -1,5 +1,6 @@
 # claim_task — claim a file-backed task as the lead.
 from core import state
+from tools.tool_result import ToolResult
 
 
 SPEC = {
@@ -13,8 +14,8 @@ SPEC = {
 }
 
 
-def claim_task(task_id: int) -> str:
+def claim_task(task_id: int) -> ToolResult:
     try:
-        return state.TASK_MGR.claim(int(task_id), state.LEAD_NAME)
+        return ToolResult(text=state.TASK_MGR.claim(int(task_id), state.LEAD_NAME))
     except ValueError as exc:
-        return f"error: {exc}"
+        return ToolResult(text=f"error: {exc}", ok=False)

@@ -7,6 +7,7 @@
 from pathlib import Path
 
 from core.config import SHORT_MEMORY_PATH
+from tools.tool_result import ToolResult
 
 
 SPEC = {
@@ -30,10 +31,13 @@ SPEC = {
 }
 
 
-def update_short_memory(markdown_content: str) -> str:
+def update_short_memory(markdown_content: str) -> ToolResult:
     path = Path(SHORT_MEMORY_PATH)
     try:
         bytes_written = path.write_text(markdown_content, encoding="utf-8")
     except OSError as exc:
-        return f"error: could not write short memory to {path}: {exc}"
-    return f"wrote {bytes_written} bytes to {path}"
+        return ToolResult(
+            text=f"error: could not write short memory to {path}: {exc}",
+            ok=False,
+        )
+    return ToolResult(text=f"wrote {bytes_written} bytes to {path}")

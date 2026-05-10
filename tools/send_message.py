@@ -1,6 +1,7 @@
 # send_message — send a message to a named teammate.
 from core import state
 from core.messaging import VALID_MSG_TYPES
+from tools.tool_result import ToolResult
 
 
 SPEC = {
@@ -25,7 +26,7 @@ SPEC = {
 }
 
 
-def send_message(to: str, content: str, msg_type: str = "message") -> str:
+def send_message(to: str, content: str, msg_type: str = "message") -> ToolResult:
     if msg_type not in VALID_MSG_TYPES:
-        return f"error: unknown msg_type '{msg_type}'"
-    return state.BUS.send(state.LEAD_NAME, to, content, msg_type=msg_type)
+        return ToolResult(text=f"error: unknown msg_type '{msg_type}'", ok=False)
+    return ToolResult(text=state.BUS.send(state.LEAD_NAME, to, content, msg_type=msg_type))
