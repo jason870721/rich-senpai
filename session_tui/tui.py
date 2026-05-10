@@ -242,7 +242,6 @@ class SenpaiApp(App):
         prompt.disabled = busy
         hint = self.query_one("#input_hint", Static)
         if busy:
-            hint.update(_BUSY_HINT)
             self._busy_started_at = time.monotonic()
             self._spin_idx = 0
             self._status_label = "thinking"
@@ -455,9 +454,8 @@ class SenpaiApp(App):
 #   _BUSY_HINT         agent in flight             — interrupt instructions
 _PLACEHOLDER_HINT: str = commands.placeholder_summary()
 _KEYMAP_HINT: str = (
-    "↵ submit · shift+↵ newline · ctrl+↑/↓ history · esc interrupt · !q exit"
+    "↵ submit · !q exit"
 )
-_BUSY_HINT: str = "agent is thinking…  esc to interrupt"
 
 
 def main() -> None:
