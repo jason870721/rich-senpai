@@ -1,0 +1,110 @@
+/* Senpai TUI stylesheet — loaded via SenpaiApp.CSS_PATH.
+ *
+ * Layout (top-to-bottom):
+ *   Header          — Textual's built-in title bar
+ *   #log            — RichLog scroll, fills remaining space
+ *   #todos          — docked TodosPanel (auto-hides when empty)
+ *   #bg             — docked BackgroundPanel
+ *   #coworkers      — docked CoworkerPanel
+ *   #status         — busy spinner + iter + elapsed
+ *   #input_dock     — pinned to bottom; vertical stack:
+ *     #input_hint   — placeholder / keymap / "agent is thinking…"
+ *     #prompt_row   — chevron + multi-line HistoryInput
+ *     #input_stats  — model · tokens · iter · uptime
+ */
+
+Screen {
+    background: $surface;
+}
+
+RichLog {
+    height: 1fr;
+    padding: 1 2;
+    background: transparent;
+    scrollbar-size: 0 0;
+}
+
+#status {
+    height: 1;
+    padding: 0 2;
+}
+
+#todos {
+    height: auto;
+    max-height: 14;
+    padding: 0 2;
+}
+
+#bg {
+    height: auto;
+    max-height: 12;
+    padding: 0 2;
+}
+
+#coworkers {
+    height: auto;
+    max-height: 10;
+    padding: 0 2;
+}
+
+#input_dock {
+    dock: bottom;
+    height: auto;
+    background: $surface;
+}
+
+#input_hint {
+    height: 1;
+    padding: 0 2;
+    color: $text-muted;
+    background: $surface;
+}
+
+#prompt_row {
+    layout: horizontal;
+    height: auto;
+    border-top: solid #808080;
+    background: $surface;
+}
+
+#prompt_row:focus-within {
+    border-top: solid cyan;
+}
+
+#prompt_chevron {
+    width: 3;
+    height: auto;
+    color: cyan;
+    text-style: bold;
+    padding: 0 0 0 1;
+    background: $surface;
+}
+
+HistoryInput {
+    width: 1fr;
+    height: auto;
+    min-height: 3;
+    max-height: 6;
+    border: none;
+    background: $surface;
+    padding: 0 0;
+    scrollbar-size: 0 0;
+    overflow-y: hidden;
+    overflow-x: hidden;
+}
+
+HistoryInput:disabled {
+    opacity: 0.6;
+}
+
+#input_stats {
+    height: 1;
+    padding: 0 2;
+    color: $text-muted;
+    background: $surface;
+}
+
+Header {
+    background: $surface;
+    color: cyan;
+}

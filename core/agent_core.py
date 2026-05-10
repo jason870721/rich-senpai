@@ -66,8 +66,12 @@ from core.llm import (
     ToolUseBlock,
     build_default_client,
 )
+from core.logging_setup import clip, get_logger
 from core.sys_prompt import SYSTEM_PROMPT
 from tools import tool_register
+
+
+log = get_logger(__name__)
 
 
 _TIKTOKEN_ENCODER = tiktoken.get_encoding("cl100k_base")
@@ -131,6 +135,11 @@ class AgentCore:
         self.on_event = on_event
         self.token_threshold = token_threshold
         self._rounds_without_todo = 0
+        # One-shot flag for `_reach_max_iter_count_prompt` so the wrap-up
+        # reminder gets injected exactly once per run_turn even though the
+        # threshold check fires on both the second-to-last and last
+        # iterations. Reset at the top of every run_turn.
+        self._max_iter_warned = False
         # Cooperative cancel — set from the UI when the user hits Esc.
         # Checked at iteration boundaries so we bail out cleanly between
         # ReAct steps even when no async op is currently in flight.
@@ -194,6 +203,8 @@ class AgentCore:
                 content=[TextBlock(text=f"<background-results>\n{text}\n</background-results>")],
             )
         )
+        log.info("background_drain notifications=%d", len(notifs))
+        log.debug("background_drain payload=%s", clip(text))
         self._emit({"type": "background_drain", "notifications": notifs})
 
     def _drain_inbox(self, messages: list[Message]) -> None:
@@ -206,13 +217,49 @@ class AgentCore:
                 content=[TextBlock(text=f"<inbox>{json.dumps(inbox, indent=2)}</inbox>")],
             )
         )
+        log.info("inbox_drain messages=%d", len(inbox))
+        log.debug("inbox_drain payload=%s", clip(inbox))
+        self._reconcile_shutdown_responses(inbox)
         self._emit({"type": "inbox_drain", "messages": inbox})
 
+    def _reconcile_shutdown_responses(self, inbox: list[dict[str, Any]]) -> None:
+        """Pop fulfilled shutdown_request entries from the registry as
+        their `shutdown_response` messages arrive in the lead's inbox.
+        Without this the registry leaks one entry per shutdown_request
+        tool call. Inbox JSON is still surfaced to the model verbatim
+        — this only manages the lead-side bookkeeping."""
+        # Local import — `core.messaging` is already imported transitively
+        # via `core.state.BUS`; importing here keeps the dependency arrow
+        # one-directional and avoids a top-level cycle.
+        from core.messaging import shutdown_requests
+        for msg in inbox:
+            if msg.get("type") != "shutdown_response":
+                continue
+            req_id = msg.get("request_id")
+            if not req_id:
+                continue
+            entry = shutdown_requests.pop(req_id, None)
+            if entry is not None:
+                log.info(
+                    "shutdown_response acked request_id=%s target=%s sender=%s",
+                    req_id,
+                    entry.get("target"),
+                    msg.get("from"),
+                )
+
     async def _maybe_auto_compact(self, messages: list[Message]) -> None:
-        if estimate_tokens(messages) <= self.token_threshold:
+        tokens = estimate_tokens(messages)
+        if tokens <= self.token_threshold:
             return
+        log.info(
+            "auto_compact triggered tokens=%d threshold=%d messages=%d",
+            tokens,
+            self.token_threshold,
+            len(messages),
+        )
         self._emit({"type": "compact", "reason": "auto threshold"})
         messages[:] = await auto_compact(messages, llm=self.llm, system=self.system_prompt)
+        log.info("auto_compact done messages=%d", len(messages))
 
     def _maybe_add_load_skill_prompt(self, user_input: str) -> str:
         """
@@ -277,6 +324,15 @@ class AgentCore:
         # request_interrupt() flipped between turns is intentionally ignored.
         self._interrupt.clear()
         self._current_task = None
+        self._max_iter_warned = False
+
+        log.info(
+            "run_turn start prior_messages=%d input_chars=%d max_iterations=%d",
+            len(messages),
+            len(user_input),
+            self.max_iterations,
+        )
+        log.debug("user_input=%s", clip(user_input))
 
         if not messages:
             initial = self._build_initial_user_message(user_input)
@@ -300,10 +356,23 @@ class AgentCore:
             await self._maybe_auto_compact(messages)
             self._drain_background(messages)
             self._drain_inbox(messages)
+            self._reach_max_iter_count_prompt(i+1, messages)
 
             # Tell the UI we're about to block on the model so the spinner can
             # flip away from the previous event ("got tool result", etc.).
             self._emit({"type": "llm_request", "iteration": i})
+            log.info(
+                "iteration=%d llm_request messages=%d tools=%d max_tokens=%d",
+                i,
+                len(messages),
+                len(tool_register.TOOL_SPECS),
+                self.max_tokens_per_call,
+            )
+            log.debug(
+                "iteration=%d llm_request payload last_message=%s",
+                i,
+                clip(_summarise_message(messages[-1])) if messages else "<none>",
+            )
             try:
                 response = await self._await_llm(
                     messages=messages,
@@ -337,10 +406,23 @@ class AgentCore:
             total_in += response.usage.input_tokens
             total_out += response.usage.output_tokens
 
+            text_blocks = sum(1 for b in response.content if isinstance(b, TextBlock))
+            tool_blocks = sum(1 for b in response.content if isinstance(b, ToolUseBlock))
+            log.info(
+                "iteration=%d llm_response stop=%s in=%d out=%d text_blocks=%d tool_uses=%d",
+                i,
+                response.stop_reason,
+                response.usage.input_tokens,
+                response.usage.output_tokens,
+                text_blocks,
+                tool_blocks,
+            )
+
             iter_text_parts: list[str] = []
             for block in response.content:
                 if isinstance(block, TextBlock):
                     iter_text_parts.append(block.text)
+                    log.debug("iteration=%d assistant_text=%s", i, clip(block.text))
                     self._emit({"type": "assistant_text", "iteration": i, "text": block.text})
             if iter_text_parts:
                 final_text_parts = iter_text_parts
@@ -440,6 +522,19 @@ class AgentCore:
                 "name": block.name,
                 "input": tool_input,
             })
+            log.info(
+                "iteration=%d tool_use id=%s name=%s",
+                iteration,
+                block.id,
+                block.name,
+            )
+            log.debug(
+                "iteration=%d tool_use id=%s name=%s input=%s",
+                iteration,
+                block.id,
+                block.name,
+                clip(tool_input),
+            )
 
             if block.name == "compress":
                 tool_result = tool_register.ToolResult(
@@ -457,6 +552,21 @@ class AgentCore:
                 "output": tool_result.text,
                 "ok": tool_result.ok,
             })
+            log.info(
+                "iteration=%d tool_result id=%s name=%s ok=%s output_chars=%d",
+                iteration,
+                block.id,
+                block.name,
+                tool_result.ok,
+                len(tool_result.text),
+            )
+            log.debug(
+                "iteration=%d tool_result id=%s name=%s output=%s",
+                iteration,
+                block.id,
+                block.name,
+                clip(tool_result.text),
+            )
             tool_calls.append(ToolCall(block.name, tool_input, tool_result.text))
             results.append(ToolResultBlock(tool_use_id=block.id, content=tool_result.text))
 
@@ -484,6 +594,7 @@ class AgentCore:
         bails cleanly with valid conversation state.
         """
         seconds = _coerce_seconds(tool_input.get("seconds"))
+        log.info("iteration=%d wait id=%s seconds=%d", iteration, block.id, seconds)
         self._emit({
             "type": "wait",
             "iteration": iteration,
@@ -570,7 +681,7 @@ class AgentCore:
         try:
             return path.read_text(encoding="utf-8")
         except OSError as exc:
-            print(f"[warn] could not read {path}: {exc}")
+            log.warning("could not read short memory %s: %s", path, exc)
             return ""
 
     @staticmethod
@@ -582,10 +693,88 @@ class AgentCore:
         total_in: int,
         total_out: int,
     ) -> CycleResult:
-        return CycleResult(
+        result = CycleResult(
             final_text="\n".join(final_text_parts),
             stop_reason=stop_reason,
             iterations=iterations,
             tool_calls=tool_calls,
             usage={"input_tokens": total_in, "output_tokens": total_out},
         )
+        log.info(
+            "run_turn end stop=%s iterations=%d tool_calls=%d in=%d out=%d final_chars=%d",
+            stop_reason,
+            iterations,
+            len(tool_calls),
+            total_in,
+            total_out,
+            len(result.final_text),
+        )
+        return result
+
+    def _reach_max_iter_count_prompt(
+        self,
+        iter_count: int,
+        messages: list[Message],
+    ) -> None:
+        """Inject a one-shot wrap-up reminder when the iteration budget is
+        almost gone.
+
+        Fires exactly once per run_turn, on the second-to-last iteration,
+        so the model still has one more LLM call to deliver a final reply
+        before the loop exits with stop="max_iterations". The reminder
+        rides on a synthetic user turn — same shape `_drain_background`
+        / `_drain_inbox` use — so it lands on the next LLM call alongside
+        any drained tool_results.
+
+        ``iter_count`` is 1-indexed (the iteration about to start). With
+        max_iterations=40 the threshold fires at iter_count=39 (one more
+        LLM call after this one) and the idempotent guard skips the
+        repeat at iter_count=40.
+        """
+        if self._max_iter_warned:
+            return
+        remaining = self.max_iterations - iter_count
+        if remaining > 1:
+            return
+        self._max_iter_warned = True
+        reminder = (
+            "<reminder>"
+            f"Iteration budget almost exhausted: {remaining} iteration(s) "
+            f"remain before max_iterations ({self.max_iterations}) forces a "
+            "stop. Do NOT start new tool calls. Use your next reply to "
+            "deliver the final answer to the user. If the work is "
+            "unfinished, the reply MUST include: "
+            "(1) what you completed this turn, "
+            "(2) what is still pending, "
+            "(3) any blockers the user must resolve before the next turn. "
+            "Be concrete — name files, functions, or data the user can "
+            "pick up from."
+            "</reminder>"
+        )
+        messages.append(
+            Message(role="user", content=[TextBlock(text=reminder)])
+        )
+        log.info(
+            "max_iter wrap-up reminder injected iter=%d/%d remaining=%d",
+            iter_count,
+            self.max_iterations,
+            remaining,
+        )
+
+
+
+def _summarise_message(message: Message) -> str:
+    """Compact summary of a Message for DEBUG logs — role + per-block hint."""
+    parts: list[str] = []
+    for block in message.content:
+        if isinstance(block, TextBlock):
+            parts.append(f"text({len(block.text)}c)")
+        elif isinstance(block, ToolUseBlock):
+            parts.append(f"tool_use({block.name})")
+        elif isinstance(block, ToolResultBlock):
+            content = block.content
+            length = len(content) if isinstance(content, str) else len(repr(content))
+            parts.append(f"tool_result({length}c)")
+        else:
+            parts.append(type(block).__name__)
+    return f"{message.role}[{', '.join(parts)}]"

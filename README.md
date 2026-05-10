@@ -162,6 +162,17 @@ Skills live in `.senpai/skills/<skill-name>/SKILL.md`. Each skill is a single Ma
 
 The skill is loaded on demand via the `load_skill` tool, which injects its content into the agent's conversation context.
 
+## Pending features
+
+### Short-term
+* Core Refactor: core folder is getting too big, need to break it down into submodules (e.g. llm/, unit/, etc.)
+* Memory System - Growable Agent.
+
+### Long-term
+* Veronica - A web service that lives with a lead agent.
+
+<br>
+
 ## License
 
 MIT

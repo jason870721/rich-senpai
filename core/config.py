@@ -58,6 +58,12 @@ SUBAGENT_MAX_TOKENS: int = _int("SUBAGENT_MAX_TOKENS", 8000)
 TEAM_POLL_INTERVAL: int = _int("TEAM_POLL_INTERVAL", 5)
 TEAM_IDLE_TIMEOUT: int = _int("TEAM_IDLE_TIMEOUT", 60)
 TEAM_MAX_TOKENS: int = _int("TEAM_MAX_TOKENS", 8000)
+# Auto-compact threshold for a teammate's own message list, evaluated at
+# the top of each work-phase iteration. Defaults to the lead's threshold
+# so a single env override (TOKEN_THRESHOLD) tunes both; set
+# TEAM_TOKEN_THRESHOLD to decouple them when teammates run on a
+# smaller-context model.
+TEAM_TOKEN_THRESHOLD: int = _int("TEAM_TOKEN_THRESHOLD", _int("TOKEN_THRESHOLD", 100_000))
 
 # --- Tool defaults --------------------------------------------------------
 BASH_DEFAULT_TIMEOUT: int = _int("BASH_DEFAULT_TIMEOUT", 30)

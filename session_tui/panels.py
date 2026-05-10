@@ -134,3 +134,81 @@ class BackgroundPanel(LivePanel[tuple]):
     def header_meta(self, items: list[tuple]) -> str:
         running = sum(1 for _, s, _ in items if s == "running")
         return f"{running} running · {len(items)} total"
+
+
+# ---------------------------------------------------------------------------
+# Coworkers (teammates)
+# ---------------------------------------------------------------------------
+
+_COWORKER_GLYPHS = {
+    "working": "▸",
+    "idle":    "○",
+    "shutdown": "✕",
+}
+_COWORKER_STYLES = {
+    "working": f"bold {GOLD}",
+    "idle":    "white",
+    "shutdown": f"dim {OK}",
+}
+
+
+class CoworkerPanel(LivePanel[tuple]):
+    """Spawned teammates and their current status.
+
+    Items: ``(name, role, status)``. Status flips between ``working`` and
+    ``idle`` while a teammate's ReAct loop runs, and to ``shutdown`` when
+    the loop exits. Shutdown members are filtered out of the snapshot so
+    the panel hides itself the instant the last live teammate is gone —
+    no "all done" archive line, just clean disappearance.
+
+    Polled at 1Hz from the App's tick (same cadence as background) since
+    teammate status mutates from inside their own asyncio tasks rather
+    than from agent events.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            widget_id="coworkers",
+            glyph="✶",
+            accent=BRAND,
+            title="coworkers",
+            done_accent=OK,
+            skip_unchanged=True,
+        )
+
+    def snapshot(self) -> list[tuple]:
+        team = state.get_team()
+        members = team.member_snapshot()
+        # Hide shutdown members entirely — see class docstring.
+        return [
+            (m["name"], m["role"], m["status"])
+            for m in members
+            if m["status"] != "shutdown"
+        ]
+
+    def signature(self, items: list[tuple]) -> tuple:
+        return tuple((name, status) for name, _, status in items)
+
+    def all_settled(self, items: list[tuple]) -> bool:
+        # Shutdown members are filtered out of `snapshot`, so anything
+        # that reaches `all_settled` is by definition still live. Return
+        # False so the panel never archives — the empty-snapshot path in
+        # LivePanel.refresh handles the close-when-everyone-gone case.
+        return False
+
+    def build_body(self, items: list[tuple]) -> Text:
+        body = Text()
+        for i, (name, role, status) in enumerate(items):
+            mark = _COWORKER_GLYPHS.get(status, "?")
+            style = _COWORKER_STYLES.get(status, "")
+            if i:
+                body.append("\n")
+            body.append(f"{mark}  {name}", style=style)
+            body.append(f"  ({role})", style="dim")
+            body.append(f"   {status}", style="dim")
+        return body
+
+    def header_meta(self, items: list[tuple]) -> str:
+        working = sum(1 for _, _, s in items if s == "working")
+        idle = sum(1 for _, _, s in items if s == "idle")
+        return f"{working} working · {idle} idle"

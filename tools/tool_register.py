@@ -24,10 +24,15 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import time
 from types import ModuleType
 from typing import Any, Awaitable, Callable, Union
 
+from core.logging_setup import clip, get_logger
 from tools.tool_result import ToolResult, as_text  # re-exported below
+
+
+log = get_logger(__name__)
 
 from tools import (
     background_run,
@@ -37,6 +42,7 @@ from tools import (
     claim_task,
     compress,
     edit_file,
+    grep,
     http_request,
     idle,
     list_teammates,
@@ -68,6 +74,7 @@ TOOL_GROUPS: dict[str, list[ModuleType]] = {
         read_file,
         write_file,
         edit_file,
+        grep,
         bash,
         background_run,
         check_background,
@@ -153,15 +160,29 @@ async def call_tool(name: str, arguments: dict[str, Any] | None = None) -> ToolR
     """
     handler = TOOL_HANDLERS.get(name)
     if handler is None:
+        log.warning("call_tool unknown tool name=%s", name)
         return ToolResult(text=f"error: unknown tool '{name}'", ok=False)
     args = arguments or {}
+    log.debug("call_tool start name=%s input=%s", name, clip(args))
+    started = time.monotonic()
     try:
         if inspect.iscoroutinefunction(handler):
             raw = await handler(**args)
         else:
             raw = await asyncio.to_thread(handler, **args)
     except TypeError as exc:
+        log.warning("call_tool invalid args name=%s err=%s", name, exc)
         return ToolResult(text=f"error: invalid arguments for '{name}': {exc}", ok=False)
+    elapsed_ms = (time.monotonic() - started) * 1000
     if isinstance(raw, ToolResult):
-        return raw
-    return ToolResult(text=str(raw), ok=True)
+        result = raw
+    else:
+        result = ToolResult(text=str(raw), ok=True)
+    log.debug(
+        "call_tool done name=%s ok=%s elapsed_ms=%.1f output=%s",
+        name,
+        result.ok,
+        elapsed_ms,
+        clip(result.text),
+    )
+    return result

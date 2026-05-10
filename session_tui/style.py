@@ -30,17 +30,6 @@ TOOL_RESULT_PREVIEW_CHARS = 800
 
 
 # Quit aliases — typed in the input box, intercepted before the agent sees them.
-QUIT_ALIASES = frozenset({"/quit", "/exit", "exit", "quit", "!q"})
-
-
-HELP_TEXT = """\
-[bold]commands[/]
-  [bold]/help[/]     show this help
-  [bold]/clear[/]    reset the in-session message history (short_memory.md is untouched)
-  [bold]/compact[/]  manually compress the in-session message history
-  [bold]/tasks[/]    list every file-backed task
-  [bold]/team[/]     list every spawned teammate
-  [bold]/inbox[/]    drain the lead's inbox (visible to the user only)
-  [bold]/quit[/]     exit (Ctrl+Q works too)
-
-[bold]everything else[/] is sent to the agent as the next user turn."""
+# `/quit` itself is a registered slash command (see session_tui.commands); the
+# extra spellings here are convenience shortcuts that bypass dispatch.
+QUIT_ALIASES = frozenset({"/exit", "exit", "quit", "!q"})

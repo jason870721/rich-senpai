@@ -2,7 +2,7 @@
 and the per-event renderers. No widget access, no app state."""
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Mapping
 
 from rich.console import Group
 from rich.padding import Padding
@@ -89,6 +89,97 @@ def looks_like_diff(text: str) -> bool:
             continue
         return line.startswith("@@ ") or line.startswith("--- ") or line.startswith("+++ ")
     return False
+
+
+def format_uptime(seconds: float) -> str:
+    """``0d 1h 24m`` — coarse-resolution session-uptime formatter."""
+    seconds = max(0.0, seconds)
+    days = int(seconds // 86400)
+    hours = int((seconds % 86400) // 3600)
+    minutes = int((seconds % 3600) // 60)
+    return f"{days}d {hours}h {minutes}m"
+
+
+def format_input_stats(
+    *,
+    model_label: str,
+    in_tokens: int,
+    out_tokens: int,
+    iters: int,
+    uptime_seconds: float,
+) -> Text:
+    """Render the stats line beneath the input dock: model · tokens · iter · uptime."""
+    return Text.assemble(
+        (model_label, f"bold {BRAND}"),
+        ("   ·   ", "dim"),
+        ("in ", "dim"),
+        (f"{in_tokens:,}", BRAND),
+        ("   ", "dim"),
+        ("out ", "dim"),
+        (f"{out_tokens:,} tok", BRAND),
+        ("   ·   ", "dim"),
+        ("iter ", "dim"),
+        (f"{iters}", BRAND),
+        ("   ·   ", "dim"),
+        ("up ", "dim"),
+        (format_uptime(uptime_seconds), BRAND),
+    )
+
+
+def format_status_line(
+    *,
+    spinner_frame: str,
+    label: str,
+    iteration: int,
+    elapsed_seconds: float,
+    model_label: str,
+) -> Text:
+    """Render the busy-spinner row shown while a turn is in flight."""
+    return Text.assemble(
+        (f"{spinner_frame}  ", f"bold {BRAND}"),
+        (label, BRAND),
+        (f"   iter {iteration}", "dim"),
+        (f"   {elapsed_seconds:4.1f}s", "dim"),
+        (f"   {model_label}", "dim"),
+        ("   esc to interrupt", "dim"),
+    )
+
+
+def format_user_echo(text: str) -> Text:
+    """User-typed input echoed into the log right before the agent's turn starts."""
+    out = Text()
+    out.append("▎ ", style=f"bold {BRAND}")
+    out.append("> ", style=f"bold {BRAND}")
+    out.append(text, style="bold white")
+    return out
+
+
+def format_turn_footer(
+    *,
+    turn_no: int,
+    stop_reason: str,
+    iterations: int,
+    usage: Mapping[str, int] | None,
+    model_label: str,
+    active_skills: set[str],
+) -> Text:
+    """One-line summary written at the end of every turn."""
+    usage = usage or {}
+    skill_suffix = (
+        f"   skills · {', '.join(sorted(active_skills))}" if active_skills else ""
+    )
+    return Text.assemble(
+        ("\n  ── ", "dim"),
+        (f"#{turn_no}  ", f"bold {BRAND}"),
+        (f"stop={stop_reason}", "dim"),
+        (f"   iters {iterations}", "dim"),
+        (
+            f"   tok in {usage.get('input_tokens', 0)} · out {usage.get('output_tokens', 0)}",
+            "dim",
+        ),
+        (f"   {model_label}", "dim"),
+        (skill_suffix, "dim"),
+    )
 
 
 def render_diff_block(text: str, *, bar_style: str = BRAND) -> Text:
