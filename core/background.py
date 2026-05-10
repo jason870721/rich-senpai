@@ -111,3 +111,8 @@ class BackgroundManager:
         except queue.Empty:
             pass
         return notifs
+
+    def reset(self):
+        self.tasks: dict[str, dict[str, Any]] = {}
+        self.notifications: Queue[dict[str, Any]] = Queue()
+        self._lock = threading.Lock()

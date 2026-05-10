@@ -54,3 +54,6 @@ class TodoManager:
 
     def has_open_items(self) -> bool:
         return any(item.get("status") != "completed" for item in self.items)
+
+    def reset(self):
+        self.items: list[dict[str, str]] = []

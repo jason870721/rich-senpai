@@ -370,6 +370,8 @@ class SenpaiApp(App):
         # Per-session UI bookkeeping that should not bleed across a reset.
         self._suppressed_tool_ids.clear()
         self.active_skills.clear()
+        # clear todos and background panels, and reset state
+        state.reset() # clean TODOList and BG state.
         self.todos_panel.reset()
         self.bg_panel.reset()
         # Wipe the scrolling log, then re-paint the intro so the screen

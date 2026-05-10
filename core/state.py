@@ -81,3 +81,9 @@ def get_team() -> TeammateManager:
             team_dir=config.TEAM_DIR,
         )
     return _team
+
+# reset() is called by tui.action_clear_history() when the user input /clear
+# clean: BG + TODOList
+def reset():
+    TODO.reset()
+    BG.reset()
