@@ -52,7 +52,7 @@ TODO_NAG_AFTER_ROUNDS: int = _int("TODO_NAG_AFTER_ROUNDS", 3)
 
 # --- Subagent (`task` tool) -----------------------------------------------
 SUBAGENT_MAX_ITERATIONS: int = _int("SUBAGENT_MAX_ITERATIONS", 30)
-SUBAGENT_MAX_TOKENS: int = _int("SUBAGENT_MAX_TOKENS", 8000)
+SUBAGENT_MAX_TOKENS_PER_CALL: int = _int("SUBAGENT_MAX_TOKENS_PER_CALL", 8000)
 
 # --- Teammate -------------------------------------------------------------
 TEAM_POLL_INTERVAL: int = _int("TEAM_POLL_INTERVAL", 5)

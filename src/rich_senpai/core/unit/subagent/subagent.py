@@ -14,7 +14,7 @@ import asyncio
 import inspect
 from typing import Any
 
-from rich_senpai.core.config import SUBAGENT_MAX_ITERATIONS, SUBAGENT_MAX_TOKENS
+from rich_senpai.core.config import SUBAGENT_MAX_ITERATIONS, SUBAGENT_MAX_TOKENS_PER_CALL
 from rich_senpai.core.llm import (
     LLMClient,
     Message,
@@ -50,7 +50,7 @@ async def run_subagent(
     agent_type: str = "Explore",
     system: str = "You are a focused subagent. Do exactly what the parent asked, then return a concise summary.",
     max_iterations: int = SUBAGENT_MAX_ITERATIONS,
-    max_tokens: int = SUBAGENT_MAX_TOKENS,
+    max_tokens: int = SUBAGENT_MAX_TOKENS_PER_CALL,
 ) -> str:
     tools = _EXPLORE_TOOLS if agent_type == "Explore" else _GENERAL_TOOLS
     messages: list[Message] = [
