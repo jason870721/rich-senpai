@@ -19,6 +19,7 @@ from rich_senpai.core.config import (
     MICROCOMPACT_MIN_KEEP_RECENT,
     SUBAGENT_MAX_ITERATIONS,
     SUBAGENT_MAX_TOKENS_PER_CALL,
+    TOOL_COMPACT_AFTER_ROUND,
 )
 from rich_senpai.core.llm import (
     LLMClient,
@@ -87,7 +88,7 @@ async def run_subagent(
     for i in range(max_iterations):
         # Same cadence as the lead — fire microcompact every `keep_recent`
         # iterations so very-long subagent runs don't bloat their context.
-        if i % keep_recent == 0:
+        if (i+1) % TOOL_COMPACT_AFTER_ROUND == 0:
             microcompact(
                 messages,
                 recovery_map=recovery_map,

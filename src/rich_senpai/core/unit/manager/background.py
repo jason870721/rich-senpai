@@ -40,16 +40,19 @@ class BackgroundManager:
         self.tasks: dict[str, dict[str, Any]] = {}
         self.notifications: Queue[dict[str, Any]] = Queue()
         self._lock = threading.Lock()
+        self._threads: list[threading.Thread] = []
 
     def run(self, command: str, timeout: int = BG_DEFAULT_TIMEOUT) -> str:
         tid = str(uuid.uuid4())[:8]
         with self._lock:
             self.tasks[tid] = {"status": "running", "command": command, "result": None}
-        threading.Thread(
+        t = threading.Thread(
             target=self._exec,
             args=(tid, command, timeout),
             daemon=True,
-        ).start()
+        )
+        self._threads.append(t)
+        t.start()
         return f"task_id={tid}\nstarted: {command[:80]}"
 
     def _exec(self, tid: str, command: str, timeout: int) -> None:
@@ -79,7 +82,10 @@ class BackgroundManager:
         )
 
         with self._lock:
-            self.tasks[tid].update({"status": status, "result": result})
+            t = self.tasks.get(tid)
+            if t is None:
+                return  # task cleaned up (e.g. test fixture teardown)
+            t.update({"status": status, "result": result})
             snapshot = {
                 "task_id": tid,
                 "status": status,
@@ -114,5 +120,14 @@ class BackgroundManager:
 
     def reset(self):
         self.tasks: dict[str, dict[str, Any]] = {}
-        self.notifications: Queue[dict[str, Any]] = Queue()
-        self._lock = threading.Lock()
+        while not self.notifications.empty():
+            try:
+                self.notifications.get_nowait()
+            except queue.Empty:
+                break
+
+    def shutdown(self, join_timeout: float = 2.0) -> None:
+        """Join all daemon threads, then drop them (best-effort)."""
+        for t in list(self._threads):
+            t.join(timeout=join_timeout)
+        self._threads.clear()

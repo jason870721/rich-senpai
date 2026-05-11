@@ -1,55 +1,47 @@
-# edit_file tool — apply a unified diff to a file.
+# edit_file tool — exact substring replace, Claude Code style.
 #
-# Input is one or more hunks (no `---`/`+++` file headers required). The
-# applier verifies each context/removal line matches the file byte-for-
-# byte; on mismatch it returns a targeted error so the agent can re-read
-# and rebuild the hunk against the current line numbers.
-from pathlib import Path
+# No diff parsing. The agent supplies old_string + new_string and the
+# tool either finds the substring exactly once and replaces it, or
+# fails with guidance. `replace_all=True` performs every replacement.
+#
+# Guard: the agent must have called read_file on this path earlier in
+# the same session (tracked via _session.ReadTracker). When no tracker
+# is installed (direct tests/scripts), this guard is skipped so callers
+# don't need harness setup.
+from __future__ import annotations
 
-from rich_senpai.tools.file_access._diff import (
-    DiffApplyError,
-    DiffParseError,
-    apply_hunks,
-    parse_hunks,
-)
+import io
+from difflib import unified_diff
+
+from rich_senpai.tools.file_access._guard import PathOutsideWorkdirError, resolve_safe
+from rich_senpai.tools.file_access._session import get_tracker
 from rich_senpai.tools.tool_result import ToolResult
 
 
 SPEC = {
     "name": "edit_file",
     "description": (
-        "Apply a unified diff to a file. Workflow: (1) call read_file to "
-        "capture exact line numbers and surrounding context; (2) author a "
-        "unified diff with one or more hunks; (3) call edit_file with "
-        "{path, diff}.\n"
+        "Performs an exact string replacement in an existing file.\n"
         "\n"
-        "Diff format: each hunk starts with a header `@@ -start,len "
-        "+start,len @@` followed by body lines, each beginning with one "
-        "of:\n"
-        "  ` ` (space) — unchanged context line\n"
-        "  `-`         — line to remove\n"
-        "  `+`         — line to add\n"
-        "Include 3 lines of unchanged context before and after every "
-        "change. For multiple regions in the same file, emit multiple "
-        "`@@` hunks in a single diff string — do NOT skip lines within a "
-        "hunk.\n"
+        "Workflow: (1) call read_file on the target file first — required, "
+        "the tool refuses to edit a file you haven't loaded into context; "
+        "(2) copy the exact text to replace as old_string (byte-for-byte, "
+        "tabs vs spaces matter, and DO NOT include the `<n>\\t` line-number "
+        "prefix from read_file output); (3) supply the replacement as "
+        "new_string.\n"
         "\n"
-        "The header `,len` counts are advisory — the parser auto-"
-        "recounts from the body (like `git apply --recount`), so "
-        "miscounting by one or two is harmless. What MUST be exact: "
-        "every ` ` (context) and `-` (remove) line has to match the "
-        "file byte-for-byte, including leading whitespace.\n"
+        "By default old_string must occur exactly once in the file — if it "
+        "appears 0 times the tool errors and you should re-read the file; "
+        "if it appears multiple times the tool errors and you should "
+        "include more surrounding context to make it unique. Pass "
+        "replace_all=true to replace every occurrence at once (useful for "
+        "renaming a variable across the whole file).\n"
         "\n"
-        "Do NOT include `---`/`+++` file headers (they are tolerated but "
-        "ignored). Do NOT include the `<n>\\t` line-number prefix from "
-        "read_file output — only the raw line content goes into the diff "
-        "body. Tabs vs spaces matter — a single mismatch fails the patch.\n"
-        "\n"
-        "On apply failure, the file has shifted under you (or your "
-        "context lines are wrong): re-read the file and rebuild the hunk "
-        "rather than retrying the same diff. On success, edit_file "
-        "returns the applied diff so the TUI can render it in git-diff "
-        "style."
+        "old_string and new_string MUST differ. To create a new file or "
+        "fully overwrite one, use write_file instead. On success the tool "
+        "returns a unified diff so the TUI can render the change. Access "
+        "outside the workdir is denied unless allow_outside_workdir is set "
+        "to true."
     ),
     "input_schema": {
         "type": "object",
@@ -58,63 +50,141 @@ SPEC = {
                 "type": "string",
                 "description": "Absolute or relative path to the file to edit.",
             },
-            "diff": {
+            "old_string": {
                 "type": "string",
                 "description": (
-                    "Unified diff body — one or more `@@` hunks, body lines "
-                    "prefixed with ' ', '-', or '+'. No `---`/`+++` headers."
+                    "Exact text to find. Must match byte-for-byte including "
+                    "whitespace and newlines. Include enough surrounding "
+                    "context to make it unique unless replace_all is true."
+                ),
+            },
+            "new_string": {
+                "type": "string",
+                "description": (
+                    "Replacement text. Must differ from old_string."
+                ),
+            },
+            "replace_all": {
+                "type": "boolean",
+                "description": (
+                    "Replace every occurrence of old_string. Defaults to "
+                    "false (require a unique match)."
                 ),
             },
             "encoding": {
                 "type": "string",
                 "description": "Text encoding. Defaults to utf-8.",
             },
+            "allow_outside_workdir": {
+                "type": "boolean",
+                "description": (
+                    "Allow editing files outside the project workdir. "
+                    "Defaults to false."
+                ),
+            },
         },
-        "required": ["path", "diff"],
+        "required": ["path", "old_string", "new_string"],
     },
 }
 
 
-def _format_applied_diff(path: str, diff: str) -> str:
-    """Return the diff with synthesized `--- a/<path>` / `+++ b/<path>`
-    headers (if not already present) so downstream renderers (the TUI)
-    can treat every diff result uniformly."""
-    stripped = diff.lstrip("\n")
-    if stripped.startswith("--- "):
-        return diff if diff.endswith("\n") else diff + "\n"
-    header = f"--- a/{path}\n+++ b/{path}\n"
-    body = stripped if stripped.endswith("\n") else stripped + "\n"
-    return header + body
+def _build_diff(path: str, old_str: str, new_str: str) -> str:
+    """Build a unified diff from old→new replacement at line level."""
+    old_lines = old_str.splitlines(keepends=True)
+    new_lines = new_str.splitlines(keepends=True)
+
+    if old_lines and old_str.endswith("\n") and not old_lines[-1].endswith("\n"):
+        old_lines[-1] += "\n"
+    if new_lines and new_str.endswith("\n") and not new_lines[-1].endswith("\n"):
+        new_lines[-1] += "\n"
+
+    buf = io.StringIO()
+    for line in unified_diff(
+        old_lines,
+        new_lines,
+        fromfile=f"a/{path}",
+        tofile=f"b/{path}",
+        n=0,
+    ):
+        buf.write(line)
+    return buf.getvalue()
 
 
 def edit_file(
     path: str,
-    diff: str,
+    old_string: str,
+    new_string: str,
+    replace_all: bool = False,
     encoding: str = "utf-8",
+    allow_outside_workdir: bool = False,
 ) -> ToolResult:
-    file_path = Path(path).expanduser()
+    try:
+        file_path = resolve_safe(path, allow_outside_workdir=allow_outside_workdir)
+    except PathOutsideWorkdirError as exc:
+        return ToolResult(text=f"error: {exc}", ok=False)
     if not file_path.exists():
         return ToolResult(text=f"error: file not found: {path}", ok=False)
     if not file_path.is_file():
         return ToolResult(text=f"error: not a regular file: {path}", ok=False)
+
+    tracker = get_tracker()
+    if tracker is not None and not tracker.was_read(file_path):
+        return ToolResult(
+            text=(
+                f"error: you must use read_file on {path} before editing it. "
+                f"Read the file first so your old_string matches the current "
+                f"content exactly."
+            ),
+            ok=False,
+        )
+
+    if old_string == new_string:
+        return ToolResult(
+            text="error: old_string and new_string are identical — no edit to apply.",
+            ok=False,
+        )
+
     try:
         contents = file_path.read_text(encoding=encoding)
     except (OSError, UnicodeDecodeError) as exc:
         return ToolResult(text=f"error: could not read {path}: {exc}", ok=False)
 
-    try:
-        hunks = parse_hunks(diff)
-    except DiffParseError as exc:
-        return ToolResult(text=f"error: diff parse failed: {exc}", ok=False)
+    count = contents.count(old_string)
+    if count == 0:
+        return ToolResult(
+            text=(
+                f"error: old_string not found in {path}. "
+                f"The text you provided does not appear in the file. "
+                f"Re-read the file and copy the exact text — including "
+                f"whitespace — that you want to replace."
+            ),
+            ok=False,
+        )
+    if count > 1 and not replace_all:
+        return ToolResult(
+            text=(
+                f"error: old_string matches {count} locations in {path}. "
+                f"Either include more surrounding context in old_string to "
+                f"make it unique, or set replace_all=true to replace every "
+                f"occurrence."
+            ),
+            ok=False,
+        )
 
-    try:
-        updated = apply_hunks(contents, hunks)
-    except DiffApplyError as exc:
-        return ToolResult(text=f"error: diff apply failed: {exc}", ok=False)
+    if replace_all:
+        updated = contents.replace(old_string, new_string)
+    else:
+        updated = contents.replace(old_string, new_string, 1)
 
     try:
         file_path.write_text(updated, encoding=encoding)
     except OSError as exc:
         return ToolResult(text=f"error: could not write {path}: {exc}", ok=False)
 
-    return ToolResult(text=_format_applied_diff(path, diff))
+    if tracker is not None:
+        tracker.mark_read(file_path)
+
+    diff = _build_diff(path, old_string, new_string)
+    if replace_all and count > 1:
+        diff = f"# replaced {count} occurrences\n{diff}"
+    return ToolResult(text=diff)

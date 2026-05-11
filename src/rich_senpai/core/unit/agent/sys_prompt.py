@@ -47,6 +47,8 @@ def _render_tool_sections() -> str:
             "title": "## Reading code",
             "entries": [
                 ("tool", "read_file"),
+                ("text", "- Output is `cat -n` format — line numbers are part of the displayed text, not the file content. When you later author an `edit_file` call, **strip the `<line>\\t` prefix** from `old_string` — the file itself does not contain those numbers."),
+                ("text", "- Reading a file marks it as loaded into the session. `edit_file` and `write_file` (overwrite) refuse to touch a file you haven't read first."),
             ],
         },
         {
@@ -65,13 +67,19 @@ def _render_tool_sections() -> str:
         },
         {
             "title": "## Editing files",
+            "intro": (
+                "Workflow: (1) `read_file` the target so it's loaded in the "
+                "session; (2) `edit_file` with the exact `old_string` to find "
+                "and `new_string` to replace it with; (3) for new files or "
+                "full rewrites, `write_file`."
+            ),
             "entries": [
-                ("tool", "replace_in_file", {"prefix": "**First choice**: "}),
-                ("tool", "edit_file", {"prefix": "**For multi-hunk or surgical edits**: "}),
-                ("text", "- For multiple regions in one `edit_file` call, emit multiple `@@` hunks."),
-                ("text", "- On apply failure, the file shifted under you or your context lines are wrong: **re-read and rebuild** rather than retrying."),
-                ("text", "- Always `read_file` first to capture the exact content and line numbers."),
+                ("tool", "edit_file", {"prefix": "**First choice for changes**: "}),
+                ("text", "- `old_string` must match byte-for-byte (whitespace, tabs vs spaces, all of it) and must be unique in the file unless `replace_all=true`."),
+                ("text", "- If `old_string` isn't found: re-read the file — your copy is stale. If it matches multiple places: include more surrounding context to disambiguate, or use `replace_all=true` for batch renames."),
+                ("text", "- DO NOT include the `<line>\\t` prefix from `read_file` output — only the raw line content goes into `old_string`."),
                 ("tool", "write_file"),
+                ("text", "- Use `write_file` only for new files or wholesale overwrites. For partial changes, `edit_file` is safer."),
             ],
         },
         {

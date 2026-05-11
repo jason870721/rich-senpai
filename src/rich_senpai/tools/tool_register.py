@@ -35,7 +35,7 @@ from rich_senpai.tools.tool_result import ToolResult, as_text  # re-exported bel
 log = get_logger(__name__)
 
 from rich_senpai.tools.delegation import list_teammates, spawn_teammate, task
-from rich_senpai.tools.file_access import edit_file, read_file, replace_in_file, write_file
+from rich_senpai.tools.file_access import edit_file, read_file, write_file
 from rich_senpai.tools.memory import (
     compress,
     idle,
@@ -72,7 +72,6 @@ TOOL_GROUPS: dict[str, list[ModuleType]] = {
         read_file,
         write_file,
         edit_file,
-        replace_in_file,
         bash,
         background_run,
         check_background,
