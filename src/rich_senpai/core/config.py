@@ -47,7 +47,6 @@ OLLAMA_HOST: str = _str("OLLAMA_HOST", "http://localhost:11434")
 # --- Agent loop ------------------------------------------------------------
 MAX_ITERATIONS: int = _int("MAX_ITERATIONS", 35)
 MAX_TOKENS_PER_CALL: int = _int("MAX_TOKENS_PER_CALL", 4096)
-SHORT_MEMORY_TOKEN_BUDGET: int = _int("SHORT_MEMORY_TOKEN_BUDGET", 3000)
 TOKEN_THRESHOLD: int = _int("TOKEN_THRESHOLD", 100_000)
 TODO_NAG_AFTER_ROUNDS: int = _int("TODO_NAG_AFTER_ROUNDS", 3)
 
@@ -67,11 +66,14 @@ TEAM_MAX_TOKENS: int = _int("TEAM_MAX_TOKENS", 8000)
 TEAM_TOKEN_THRESHOLD: int = _int("TEAM_TOKEN_THRESHOLD", _int("TOKEN_THRESHOLD", 100_000))
 
 # --- Tool defaults --------------------------------------------------------
-BASH_DEFAULT_TIMEOUT: int = _int("BASH_DEFAULT_TIMEOUT", 30)
+BASH_DEFAULT_TIMEOUT: int = _int("BASH_DEFAULT_TIMEOUT", 180)
 HTTP_DEFAULT_TIMEOUT: int = _int("HTTP_DEFAULT_TIMEOUT", 30)
-BG_DEFAULT_TIMEOUT: int = _int("BG_DEFAULT_TIMEOUT", 120)
+BG_DEFAULT_TIMEOUT: int = _int("BG_DEFAULT_TIMEOUT", 360)
 WAIT_DEFAULT_SECONDS: int = _int("WAIT_DEFAULT_SECONDS", 15)
 WAIT_MAX_SECONDS: int = _int("WAIT_MAX_SECONDS", 300)
+# Microcompact keeps this many leading chars from each compacted tool result
+# so the LLM can still see file headers, first grep hits, etc.
+MICROCOMPACT_KEEP_PREFIX: int = _int("MICROCOMPACT_KEEP_PREFIX", 500)
 
 # --- Paths ----------------------------------------------------------------
 # Root directory for all runtime artifacts (.tasks/, .team/, .transcripts/,
@@ -91,4 +93,5 @@ TEAM_DIR: Path = SENPAI_HOME / "team"
 INBOX_DIR: Path = TEAM_DIR / "inbox"
 TRANSCRIPT_DIR: Path = SENPAI_HOME / "transcripts"
 
-SHORT_MEMORY_PATH: str = _str("RICH_SENPAI_SHORT_MEM", str(SENPAI_HOME / "short_memory.md"))
+USER_PROFILE_PATH: str = _str("RICH_SENPAI_USER_PROFILE", str(SENPAI_HOME / "user_profile.md"))
+USER_PROFILE_TOKEN_BUDGET: int = _int("USER_PROFILE_TOKEN_BUDGET", 3000)

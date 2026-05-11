@@ -28,10 +28,10 @@ TIPS: list[str] = [
     # First slot is auto-derived from the slash-command registry so the
     # rotation stays in sync when commands are added or removed.
     placeholder_summary(),
-    "Type '/{skill-name}' at begin to active your customized skill with following conversation.",
+    "Type '/{skill-name}' at the start of a message to activate a custom skill.",
     "Add your customized skill to the skill folder: .senpai/skills/{skill-name}/SKILL.md",
     "Type '/help' to see what each slash command does.",
-    "To avoid context too long, you can use the '/compact' tp compress current context.",
+    "To avoid context overflow, use '/compact' to compress the conversation.",
 ]
 
 

@@ -35,8 +35,8 @@ def paint_welcome(write: callable, model_label: str) -> None:
     greeting.append("welcome back  ·  ", style=f"bold {ACCENT}")
     greeting.append("ready when you are!\n\n", style=ACCENT)
     greeting.append(
-        "I am rich-senpai, your personal financial manager, software engineer\n\n"
-        "I'm here to help you solve problem or make money.\n\n",
+        "I am rich-senpai, your autonomous coding agent.\n\n"
+        "I'm here to help you solve problems and build software.\n\n",
         style="white",
     )
     for bullet in (

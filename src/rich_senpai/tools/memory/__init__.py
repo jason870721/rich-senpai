@@ -4,15 +4,15 @@ from rich_senpai.tools.memory import (
     idle,
     load_skill,
     todo_write,
-    update_short_memory,
+    update_master_profile,
     wait,
 )
 
 __all__ = [
-    "update_short_memory",
     "todo_write",
     "load_skill",
     "compress",
     "idle",
     "wait",
+    "update_master_profile",
 ]

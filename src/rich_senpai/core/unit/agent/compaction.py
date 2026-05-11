@@ -30,10 +30,15 @@ def microcompact(
     *,
     keep_recent: int = 2,
     threshold: int = 200,
+    keep_prefix: int | None = None,
 ) -> None:
     """In place: replace tool_result content in older user turns with a
-    compact stub, preserving tool_use_id so the model can still match
-    results to calls."""
+    compact stub that retains a leading prefix so the model doesn't lose
+    all context (file headers, first grep hits, etc.). Tool_use_id is
+    preserved so the model can still match results to calls."""
+    if keep_prefix is None:
+        keep_prefix = config.MICROCOMPACT_KEEP_PREFIX
+
     indices = [
         i for i, m in enumerate(messages)
         if m.role == "user"
@@ -47,7 +52,11 @@ def microcompact(
         new_content: list[Any] = []
         for block in messages[idx].content:
             if isinstance(block, ToolResultBlock) and len(block.content) > threshold:
-                stub = f"[compacted: {len(block.content)} chars elided]"
+                prefix = block.content[:keep_prefix]
+                if len(block.content) > len(prefix):
+                    stub = f"{prefix}\n[... truncated, {len(block.content)} total chars, {len(prefix)} shown]"
+                else:
+                    stub = f"{prefix}\n[... {len(block.content)} chars — kept in full]"
                 new_content.append(
                     ToolResultBlock(tool_use_id=block.tool_use_id, content=stub)
                 )

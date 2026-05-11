@@ -1,8 +1,7 @@
-# read file tool — line-numbered output (cat -n style).
+# read_file tool — returns clean file content with a compact header.
 #
-# Each line is prefixed with `<n>\t` where `<n>` is right-aligned in 6
-# columns. The agent uses these line numbers to author edit_file diff
-# hunks; the prefix is metadata and MUST NOT be included in any diff body.
+# No line-number prefixing — the LLM gets raw content it can use directly
+# in diffs. Line count and range are noted in the header.
 from pathlib import Path
 
 from rich_senpai.tools.tool_result import ToolResult
@@ -11,11 +10,10 @@ from rich_senpai.tools.tool_result import ToolResult
 SPEC = {
     "name": "read_file",
     "description": (
-        "Read the contents of a local text file and return it with line "
-        "numbers (cat -n style). Each output line is `<n>\\t<content>` "
-        "where <n> is the 1-indexed line number. The `<n>\\t` prefix is "
-        "metadata for navigating the file and authoring edit_file diffs — "
-        "it MUST be stripped before constructing any unified-diff body."
+        "Read the contents of a local text file and return clean content "
+        "with a `[path (N lines)]` header. Lines are NOT numbered inline — "
+        "they are raw content ready to copy into diff bodies. Determine "
+        "line numbers by counting from the first returned line (line 1)."
     ),
     "input_schema": {
         "type": "object",
@@ -34,17 +32,6 @@ SPEC = {
 }
 
 
-def _format_with_line_numbers(text: str) -> str:
-    if text == "":
-        return ""
-    trailing_nl = text.endswith("\n")
-    lines = text.split("\n")
-    if trailing_nl:
-        lines.pop()
-    formatted = "\n".join(f"{i + 1:>6}\t{line}" for i, line in enumerate(lines))
-    return formatted + ("\n" if trailing_nl else "")
-
-
 def read_file(path: str, encoding: str = "utf-8") -> ToolResult:
     file_path = Path(path).expanduser()
     if not file_path.exists():
@@ -60,4 +47,12 @@ def read_file(path: str, encoding: str = "utf-8") -> ToolResult:
         )
     except OSError as exc:
         return ToolResult(text=f"error: could not read {path}: {exc}", ok=False)
-    return ToolResult(text=_format_with_line_numbers(contents))
+
+    # Count lines for the header
+    line_count = contents.count("\n")
+    if contents and not contents.endswith("\n"):
+        line_count += 1
+
+    resolved = str(file_path.resolve())
+    header = f"[File: {resolved}, {line_count} lines]"
+    return ToolResult(text=f"{header}\n{contents.rstrip('\n')}")

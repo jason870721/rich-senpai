@@ -35,13 +35,13 @@ from rich_senpai.tools.tool_result import ToolResult, as_text  # re-exported bel
 log = get_logger(__name__)
 
 from rich_senpai.tools.delegation import list_teammates, spawn_teammate, task
-from rich_senpai.tools.file_access import edit_file, grep, read_file, write_file
+from rich_senpai.tools.file_access import edit_file, read_file, replace_in_file, write_file
 from rich_senpai.tools.memory import (
     compress,
     idle,
     load_skill,
     todo_write,
-    update_short_memory,
+    update_master_profile,
     wait,
 )
 from rich_senpai.tools.messaging import (
@@ -51,7 +51,7 @@ from rich_senpai.tools.messaging import (
     send_message,
     shutdown_request,
 )
-from rich_senpai.tools.shell import background_run, bash, check_background, http_request
+from rich_senpai.tools.shell import background_run, bash, check_background
 from rich_senpai.tools.task_board import (
     claim_task,
     task_create,
@@ -70,12 +70,10 @@ TOOL_GROUPS: dict[str, list[ModuleType]] = {
         read_file,
         write_file,
         edit_file,
-        grep,
+        replace_in_file,
         bash,
         background_run,
         check_background,
-        http_request,
-        update_short_memory,
     ],
     "working_memory": [
         todo_write,
@@ -100,6 +98,7 @@ TOOL_GROUPS: dict[str, list[ModuleType]] = {
         compress,
         idle,
         wait,
+        update_master_profile,
     ],
 }
 

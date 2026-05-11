@@ -51,8 +51,6 @@ from rich_senpai.core.unit.agent.compaction import (
 from rich_senpai.core.config import (
     MAX_ITERATIONS,
     MAX_TOKENS_PER_CALL,
-    SHORT_MEMORY_PATH,
-    SHORT_MEMORY_TOKEN_BUDGET,
     TODO_NAG_AFTER_ROUNDS,
     TOKEN_THRESHOLD,
     WAIT_DEFAULT_SECONDS,
@@ -115,8 +113,6 @@ class AgentCore:
         self,
         *,
         system_prompt: str = SYSTEM_PROMPT,
-        short_memory_path: str | None = None,
-        short_memory_token_budget: int = SHORT_MEMORY_TOKEN_BUDGET,
         max_iterations: int = MAX_ITERATIONS,
         max_tokens_per_call: int = MAX_TOKENS_PER_CALL,
         llm: LLMClient | None = None,
@@ -125,8 +121,6 @@ class AgentCore:
     ) -> None:
 
         self.system_prompt = system_prompt
-        self.short_memory_path = short_memory_path or SHORT_MEMORY_PATH
-        self.short_memory_token_budget = short_memory_token_budget
         self.max_iterations = max_iterations
         self.max_tokens_per_call = max_tokens_per_call
         self.llm = llm or build_default_client()
@@ -652,37 +646,12 @@ class AgentCore:
             results.append(TextBlock(text="<reminder>Update your todos with TodoWrite tool.</reminder>"))
 
     def _build_initial_user_message(self, user_input: str) -> str:
-        short_mem_text = self._read_short_memory()
         parts: list[str] = []
-
-        if short_mem_text:
-            token_count = _count_tokens(short_mem_text)
-            if token_count > self.short_memory_token_budget:
-                parts.append(
-                    f"[BUDGET WARNING] Your short memory is at {token_count} "
-                    f"tokens, over the {self.short_memory_token_budget} "
-                    f"budget. Summarize it via update_short_memory this cycle "
-                    f"before doing anything else."
-                )
-                parts.append("")
-
-        parts.append("# SHORT MEMORY (your scratchpad from the last cycle)")
-        parts.append(short_mem_text if short_mem_text else "(empty — first cycle)")
         parts.append("")
         parts.append("# User input:")
         parts.append(user_input)
 
         return "\n".join(parts)
-
-    def _read_short_memory(self) -> str:
-        path = Path(self.short_memory_path)
-        if not path.exists():
-            return ""
-        try:
-            return path.read_text(encoding="utf-8")
-        except OSError as exc:
-            log.warning("could not read short memory %s: %s", path, exc)
-            return ""
 
     @staticmethod
     def _result(
