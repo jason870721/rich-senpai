@@ -46,7 +46,7 @@ OLLAMA_HOST: str = _str("OLLAMA_HOST", "http://localhost:11434")
 
 # --- Agent loop ------------------------------------------------------------
 MAX_ITERATIONS: int = _int("MAX_ITERATIONS", 35)
-MAX_TOKENS_PER_CALL: int = _int("MAX_TOKENS_PER_CALL", 4096)
+MAX_TOKENS_PER_CALL: int = _int("MAX_TOKENS_PER_CALL", 8000)
 TOKEN_THRESHOLD: int = _int("TOKEN_THRESHOLD", 100_000)
 TODO_NAG_AFTER_ROUNDS: int = _int("TODO_NAG_AFTER_ROUNDS", 3)
 
@@ -78,7 +78,7 @@ MICROCOMPACT_KEEP_PREFIX: int = _int("MICROCOMPACT_KEEP_PREFIX", 500)
 # user turns stay untouched. Doubles as the cadence — microcompact fires once
 # every `keep_recent` ReAct iterations. Floor of 6 enforced at agent init so
 # the six progressive tiers (50/30/20/10/5/1%) all get exercised.
-MICROCOMPACT_KEEP_RECENT: int = _int("MICROCOMPACT_KEEP_RECENT", 6)
+MICROCOMPACT_KEEP_RECENT: int = _int("MICROCOMPACT_KEEP_RECENT", 8)
 MICROCOMPACT_MIN_KEEP_RECENT: int = 6
 # Soft FIFO cap on the per-loop recovery map — guards against unbounded
 # growth on very long sessions. Oldest entries evict first; an evicted
