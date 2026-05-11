@@ -247,6 +247,15 @@ necessarily what happened. Spot-check before relying on it.
 - `compress` — {_td('compress')}
 - `idle` — {_td('idle')}
 
+## Recovering compacted tool results
+Older tool results in your context may have been replaced with a short \
+stub by `microcompact` to keep the conversation cheap. Each stub ends \
+with `... call recover_compacted_tool_use_result(tool_use_id="<id>") to \
+restore the full output]`. If a stub no longer carries enough information \
+for the next step, call that tool with the quoted id to read the original \
+result back. Don't call it speculatively — recovery re-inflates token use.
+- `recover_compacted_tool_use_result` — {_td('recover_compacted_tool_use_result')}
+
 ## Learning about the master
 - `update_master_profile` — {_td('update_master_profile')}
 

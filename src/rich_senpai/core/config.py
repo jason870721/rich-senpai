@@ -74,6 +74,19 @@ WAIT_MAX_SECONDS: int = _int("WAIT_MAX_SECONDS", 300)
 # Microcompact keeps this many leading chars from each compacted tool result
 # so the LLM can still see file headers, first grep hits, etc.
 MICROCOMPACT_KEEP_PREFIX: int = _int("MICROCOMPACT_KEEP_PREFIX", 500)
+# Progressive microcompact: how many of the most-recent tool_result-carrying
+# user turns stay untouched. Doubles as the cadence — microcompact fires once
+# every `keep_recent` ReAct iterations. Floor of 6 enforced at agent init so
+# the six progressive tiers (50/30/20/10/5/1%) all get exercised.
+MICROCOMPACT_KEEP_RECENT: int = _int("MICROCOMPACT_KEEP_RECENT", 6)
+MICROCOMPACT_MIN_KEEP_RECENT: int = 6
+# Soft FIFO cap on the per-loop recovery map — guards against unbounded
+# growth on very long sessions. Oldest entries evict first; an evicted
+# recovery call returns a clear error.
+MICROCOMPACT_RECOVERY_CAP: int = _int("MICROCOMPACT_RECOVERY_CAP", 200)
+# Compaction-skip threshold: leave tool_results shorter than this alone, since
+# the stub itself would be longer than the original.
+MICROCOMPACT_MIN_LEN: int = _int("MICROCOMPACT_MIN_LEN", 200)
 
 # --- Paths ----------------------------------------------------------------
 # Root directory for all runtime artifacts (.tasks/, .team/, .transcripts/,

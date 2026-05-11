@@ -73,6 +73,9 @@ from rich_senpai.session_tui.welcome import paint_welcome
 from rich_senpai.session_tui.widgets import HistoryInput
 
 
+_CONTINUE_HINT = "Enter ↵ continue · Esc to stop · or type to redirect"
+
+
 class SenpaiApp(App):
     CSS_PATH = str(Path(__file__).parent / "styles.tcss")
 
@@ -150,6 +153,13 @@ class SenpaiApp(App):
         self._total_in_tokens: int = 0
         self._total_out_tokens: int = 0
         self._total_iters: int = 0
+        # When the agent returns ``stop_reason="max_iterations"`` the UI
+        # parks in a tri-state continuation prompt: empty Enter resumes the
+        # loop (``continue_run``), text Enter starts a fresh turn with that
+        # text, and Esc abandons the continuation. Set only between turns,
+        # so the input is unlocked (``_busy`` is False) while the flag is
+        # True — distinct from the in-flight interrupt path.
+        self._awaiting_continue: bool = False
 
     @property
     def last_assistant_text(self) -> str:
@@ -170,9 +180,16 @@ class SenpaiApp(App):
         the input is empty and the agent is idle, and disappears the
         moment the user starts typing. Busy-state hiding is owned by
         ``_set_busy``; the tip rotation itself is driven by
-        ``_rotate_tip`` on a ``tips.ROTATION_SECONDS`` interval."""
-        prompt = self.query_one(HistoryInput)
+        ``_rotate_tip`` on a ``tips.ROTATION_SECONDS`` interval.
+
+        When ``_awaiting_continue`` is set, the hint is hijacked to show
+        the continuation prompt regardless of buffer content, so the user
+        always sees how to resume / stop / redirect."""
         hint = self.query_one("#input_hint", Static)
+        if self._awaiting_continue:
+            hint.update(_CONTINUE_HINT)
+            return
+        prompt = self.query_one(HistoryInput)
         hint.update(tips.tip_at(self._tip_idx) if not prompt.text else "")
 
     def _rotate_tip(self) -> None:
@@ -183,7 +200,7 @@ class SenpaiApp(App):
         still advances so the next idle window doesn't park on the same
         tip forever."""
         self._tip_idx += 1
-        if self._busy:
+        if self._busy or self._awaiting_continue:
             return
         prompt = self.query_one(HistoryInput)
         if prompt.text:
@@ -213,7 +230,7 @@ class SenpaiApp(App):
         """Reveal one more character of the active tip. Re-checks the
         idle gate every tick so the animation aborts cleanly if the user
         starts typing or the agent enters a turn mid-reveal."""
-        if self._busy:
+        if self._busy or self._awaiting_continue:
             self._cancel_tip_animation()
             return
         prompt = self.query_one(HistoryInput)
@@ -471,6 +488,20 @@ class SenpaiApp(App):
     def on_history_input_submitted(self, event: HistoryInput.Submitted) -> None:
         text = event.value.strip()
         event.widget.clear_buffer()
+
+        # max_iterations continuation prompt — empty Enter resumes the
+        # loop, non-empty falls through to the normal new-turn path
+        # (which will overwrite the continuation with a fresh turn).
+        if self._awaiting_continue and not self._busy:
+            if not text:
+                self._awaiting_continue = False
+                self._set_input_hint_for_buffer()
+                self._start_continue_turn()
+                return
+            # Non-empty: drop the continuation, let the new turn take over.
+            self._awaiting_continue = False
+            self._set_input_hint_for_buffer()
+
         if not text:
             return
 
@@ -505,6 +536,30 @@ class SenpaiApp(App):
             name="agent_turn",
         )
 
+    def _start_continue_turn(self) -> None:
+        """Resume the agent loop after a max_iterations pause.
+
+        Counterpart to ``_run_turn_async`` for the empty-Enter branch of
+        the continuation prompt — no user echo, no turn_no bump (this is
+        the same logical turn continuing), and the agent's ``continue_run``
+        runs the loop on the existing message list with the iteration
+        counter reset to 0.
+        """
+        self._set_busy(True)
+        self.run_worker(
+            self._continue_turn_async(),
+            exclusive=True,
+            name="agent_turn",
+        )
+
+    async def _continue_turn_async(self) -> None:
+        try:
+            result = await self.agent.continue_run(self.messages)
+        except Exception as exc:  # noqa: BLE001 — surface every error to the user
+            self._on_turn_error(exc)
+            return
+        self._on_turn_done(result)
+
     # ----- turn lifecycle --------------------------------------------------
 
     async def _run_turn_async(self, user_input: str) -> None:
@@ -531,6 +586,14 @@ class SenpaiApp(App):
         else:
             self._write_turn_footer(result)
         self._set_busy(False)
+        # If the agent stopped at the iteration budget, park in the
+        # continuation prompt. ``_set_busy(False)`` already restored the
+        # hint to the rotating tip; flip the flag and repaint so the
+        # placeholder shows the continue/stop/redirect copy instead.
+        if result.stop_reason == "max_iterations":
+            self._awaiting_continue = True
+            self._cancel_tip_animation()
+            self._set_input_hint_for_buffer()
         self._refresh_input_stats()
 
     def _on_turn_error(self, exc: Exception) -> None:
@@ -546,6 +609,13 @@ class SenpaiApp(App):
         # Per-session UI bookkeeping that should not bleed across a reset.
         self._suppressed_tool_ids.clear()
         self.active_skills.clear()
+        # If we were parked at a max_iterations prompt, drop it — the
+        # conversation it was tied to no longer exists.
+        self._awaiting_continue = False
+        # Recovery map keys (tool_use_ids) are tied to the message list
+        # we just wiped — clear so /clear doesn't leak old originals
+        # into the next conversation.
+        self.agent._recovery_map.clear()
         # clear todos and background panels, and reset state
         state.reset() # clean TODOList and BG state.
         self.todos_panel.reset()
@@ -570,7 +640,18 @@ class SenpaiApp(App):
         """Esc — cooperatively cancel the in-flight agent turn. The agent
         checks the flag at iteration boundaries, so the current LLM call
         finishes before we return; further iterations / tool dispatch are
-        skipped. No-op when idle."""
+        skipped. While idle in a max_iterations continuation prompt, Esc
+        instead abandons the continuation. No-op when fully idle."""
+        if self._awaiting_continue and not self._busy:
+            self._awaiting_continue = False
+            self._set_input_hint_for_buffer()
+            self.write(
+                Text(
+                    "↩  stopped at max iterations — type a new instruction to continue.",
+                    style="dim",
+                )
+            )
+            return
         if not self._busy or self._status_label == "interrupting…":
             return
         self.agent.request_interrupt()

@@ -7,12 +7,10 @@
 
 ## This Session (Session 4)
 - **Fixed tool description drift in system prompt**: Compared every tool SPEC against the hardcoded descriptions in `sys_prompt.py`. Fixed 3 mismatches (background_run lacked auto-surface info, idle lacked "lead does not idle", update_short_memory lacked token cap) and added missing descriptions for 7 tools (send_message, read_inbox, broadcast, list_teammates, shutdown_request, plan_approval, load_skill). Added new `## Messaging` and `## Skills` sections.
-- **Fixed stale SPEC**: `update_short_memory.py` SPEC still had trading-specific language ("market thesis, ongoing trades") from the personal-finance-manager era. Replaced with generic software-engineer phrasing.
 - Verified `build_system_prompt()` still builds cleanly (9768 chars).
 
 ## Files changed this session
 - `src/rich_senpai/core/unit/agent/sys_prompt.py` — updated 3 mismatched descriptions; added 7 missing tool sub-sections; added `## Messaging` and `## Skills` sections
-- `src/rich_senpai/tools/memory/update_short_memory.py` — removed stale trading language from SPEC description
 - `docs/resume.md` — this file
 
 ## Next Priority Areas

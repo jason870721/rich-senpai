@@ -156,6 +156,21 @@ def render_inbox_drain(app: "SenpaiApp", event: dict[str, Any]) -> None:
     )
 
 
+def render_max_iter_pause(app: "SenpaiApp", event: dict[str, Any]) -> None:
+    n = event.get("iterations", 0)
+    app.write(
+        Text.assemble(
+            ("⏼  ", GOLD),
+            ("max iterations", f"bold {GOLD}"),
+            (
+                f"   reached {n}-iter limit — Enter to continue, "
+                "Esc to stop, or type a new instruction to redirect",
+                "dim",
+            ),
+        )
+    )
+
+
 def render_interrupted(app: "SenpaiApp", event: dict[str, Any]) -> None:
     stage = event.get("stage", "")
     suffix = f"   {stage}" if stage else ""
@@ -209,6 +224,7 @@ EVENT_RENDERERS: dict[str, Callable[["SenpaiApp", dict[str, Any]], None]] = {
     "background_drain": render_background_drain,
     "inbox_drain": render_inbox_drain,
     "interrupted": render_interrupted,
+    "max_iter_pause": render_max_iter_pause,
 }
 
 

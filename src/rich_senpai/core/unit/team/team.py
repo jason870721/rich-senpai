@@ -21,6 +21,8 @@ from typing import Any
 from rich_senpai.core import config
 from rich_senpai.core.unit.agent.compaction import auto_compact, estimate_tokens, microcompact
 from rich_senpai.core.config import (
+    MICROCOMPACT_KEEP_RECENT,
+    MICROCOMPACT_MIN_KEEP_RECENT,
     TEAM_IDLE_TIMEOUT,
     TEAM_MAX_TOKENS,
     TEAM_POLL_INTERVAL,
@@ -42,6 +44,9 @@ from rich_senpai.tools.file_access import (
     write_file as write_file_tool,
 )
 from rich_senpai.tools.memory import idle as idle_tool
+from rich_senpai.tools.memory.recover_compacted_tool_use_result import (
+    SPEC as _RECOVER_SPEC,
+)
 from rich_senpai.tools.messaging import send_message as send_message_tool
 from rich_senpai.tools.shell import bash as bash_tool
 from rich_senpai.tools.task_board import claim_task as claim_task_tool
@@ -67,6 +72,7 @@ _TEAMMATE_TOOLS = [
     send_message_tool.SPEC,
     idle_tool.SPEC,
     claim_task_tool.SPEC,
+    _RECOVER_SPEC,
 ]
 
 
@@ -78,10 +84,18 @@ class TeammateManager:
         bus: MessageBus,
         task_mgr: TaskManager,
         team_dir: Path | None = None,
+        keep_recent: int = MICROCOMPACT_KEEP_RECENT,
     ) -> None:
+        if keep_recent < MICROCOMPACT_MIN_KEEP_RECENT:
+            raise ValueError(
+                f"keep_recent must be >= {MICROCOMPACT_MIN_KEEP_RECENT} "
+                f"so all progressive compaction tiers are exercised "
+                f"(got {keep_recent})"
+            )
         self.llm = llm
         self.bus = bus
         self.task_mgr = task_mgr
+        self.keep_recent = keep_recent
         self.team_dir = team_dir or config.TEAM_DIR
         self.team_dir.mkdir(parents=True, exist_ok=True)
         self.config_path = self.team_dir / "config.json"
@@ -89,6 +103,10 @@ class TeammateManager:
         # Loop tasks per teammate name. Populated by `spawn`; cancelled on
         # app shutdown via Textual's task lifecycle.
         self.tasks: dict[str, asyncio.Task[None]] = {}
+        # Per-teammate recovery maps for microcompact + the
+        # `recover_compacted_tool_use_result` tool. Keyed by teammate name
+        # so two teammates don't share state. Allocated lazily inside _loop.
+        self._recovery_maps: dict[str, dict[str, str]] = {}
 
     def _load_config(self) -> dict[str, Any]:
         if self.config_path.exists():
@@ -180,6 +198,7 @@ class TeammateManager:
         messages: list[Message] = [
             Message(role="user", content=[TextBlock(text=prompt)])
         ]
+        recovery_map = self._recovery_maps.setdefault(name, {})
         log.info("teammate=%s loop start role=%s team=%s", name, role, team_name)
 
         try:
@@ -190,10 +209,16 @@ class TeammateManager:
                     # Compaction first — keeps the teammate's context from
                     # growing unbounded across long-running auto-claim
                     # cycles. microcompact collapses old tool_results
-                    # cheaply; auto_compact runs an LLM-backed summary
-                    # only if the budget is genuinely blown.
-                    microcompact(messages, keep_recent=3)
-                    await self._maybe_compact(name, messages, sys_prompt)
+                    # cheaply (now progressive with a recovery map);
+                    # auto_compact runs an LLM-backed summary only if the
+                    # budget is genuinely blown.
+                    if work_iter % self.keep_recent == 0:
+                        microcompact(
+                            messages,
+                            recovery_map=recovery_map,
+                            keep_recent=self.keep_recent,
+                        )
+                    await self._maybe_compact(name, messages, sys_prompt, recovery_map)
 
                     inbox = self.bus.read_inbox(name)
                     if inbox:
@@ -275,7 +300,7 @@ class TeammateManager:
                             block.name,
                             clip(tool_input),
                         )
-                        output = await self._dispatch(name, block.name, tool_input)
+                        output = await self._dispatch(name, block.name, tool_input, recovery_map)
                         if block.name == "idle":
                             idle_requested = True
                         log.info(
@@ -451,12 +476,17 @@ class TeammateManager:
         name: str,
         messages: list[Message],
         sys_prompt: str,
+        recovery_map: dict[str, str],
     ) -> None:
         """Auto-compact a teammate's message list when its estimated
         token count crosses ``TEAM_TOKEN_THRESHOLD``. Called at the top
         of every work-phase iteration. Replaces ``messages`` in place
         with the compressed form so the loop's identity-injection guard
-        (``len(messages) <= 3``) trips correctly on the next claim."""
+        (``len(messages) <= 3``) trips correctly on the next claim.
+
+        The recovery map is cleared as well: every tool_use_id it held
+        belonged to the pre-summary transcript and is now unreachable.
+        """
         tokens = estimate_tokens(messages)
         if tokens <= TEAM_TOKEN_THRESHOLD:
             return
@@ -472,13 +502,20 @@ class TeammateManager:
             llm=self.llm,
             system=sys_prompt,
         )
+        recovery_map.clear()
         log.info(
             "teammate=%s auto_compact done messages=%d",
             name,
             len(messages),
         )
 
-    async def _dispatch(self, name: str, tool_name: str, args: dict[str, Any]) -> str:
+    async def _dispatch(
+        self,
+        name: str,
+        tool_name: str,
+        args: dict[str, Any],
+        recovery_map: dict[str, str],
+    ) -> str:
         if tool_name == "idle":
             return "Entering idle phase."
         if tool_name == "claim_task":
@@ -491,6 +528,17 @@ class TeammateManager:
                 return self.bus.send(name, args["to"], args["content"])
             except KeyError as exc:
                 return f"error: missing argument {exc}"
+        if tool_name == "recover_compacted_tool_use_result":
+            tool_use_id = args.get("tool_use_id")
+            if not isinstance(tool_use_id, str) or not tool_use_id:
+                return "error: 'tool_use_id' is required and must be a non-empty string."
+            original = recovery_map.get(tool_use_id)
+            if original is None:
+                return (
+                    f"error: no original content for tool_use_id={tool_use_id!r}. "
+                    "It was never compacted, the id is wrong, or it has been evicted."
+                )
+            return original
         handler = _FS_HANDLERS.get(tool_name)
         if handler is None:
             log.warning("teammate=%s unknown tool=%s", name, tool_name)

@@ -51,6 +51,8 @@ from rich_senpai.core.unit.agent.compaction import (
 from rich_senpai.core.config import (
     MAX_ITERATIONS,
     MAX_TOKENS_PER_CALL,
+    MICROCOMPACT_KEEP_RECENT,
+    MICROCOMPACT_MIN_KEEP_RECENT,
     TODO_NAG_AFTER_ROUNDS,
     TOKEN_THRESHOLD,
     WAIT_DEFAULT_SECONDS,
@@ -118,17 +120,32 @@ class AgentCore:
         llm: LLMClient | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
         token_threshold: int = TOKEN_THRESHOLD,
+        keep_recent: int = MICROCOMPACT_KEEP_RECENT,
     ) -> None:
 
+        if keep_recent < MICROCOMPACT_MIN_KEEP_RECENT:
+            raise ValueError(
+                f"keep_recent must be >= {MICROCOMPACT_MIN_KEEP_RECENT} "
+                f"so all progressive compaction tiers are exercised "
+                f"(got {keep_recent})"
+            )
         self.system_prompt = system_prompt
         self.max_iterations = max_iterations
         self.max_tokens_per_call = max_tokens_per_call
+        self.keep_recent = keep_recent
         self.llm = llm or build_default_client()
         # Share the same LLM with subagent / teammate calls.
         state.set_llm(self.llm)
         self.on_event = on_event
         self.token_threshold = token_threshold
         self._rounds_without_todo = 0
+        # Per-instance recovery map for microcompact. Key: tool_use_id,
+        # value: full original tool_result content. Populated lazily the
+        # first time a result is compacted; consulted by the intercepted
+        # `recover_compacted_tool_use_result` tool. Cleared after every
+        # auto_compact (since the new summary message has no tool_use_ids
+        # tying back to the old entries) and on /clear in the TUI.
+        self._recovery_map: dict[str, str] = {}
         # One-shot flag for `_reach_max_iter_count_prompt` so the wrap-up
         # reminder gets injected exactly once per run_turn even though the
         # threshold check fires on both the second-to-last and last
@@ -253,6 +270,10 @@ class AgentCore:
         )
         self._emit({"type": "compact", "reason": "auto threshold"})
         messages[:] = await auto_compact(messages, llm=self.llm, system=self.system_prompt)
+        # The summary message that replaces the transcript has no tool_use_ids,
+        # so every entry in the recovery map is now unreachable. Drop them
+        # so the cap doesn't fill up with dead state.
+        self._recovery_map.clear()
         log.info("auto_compact done messages=%d", len(messages))
 
     def _maybe_add_load_skill_prompt(self, user_input: str) -> str:
@@ -314,11 +335,7 @@ class AgentCore:
         # if user input is start with "/{skill-name}"
         user_input = self._maybe_add_load_skill_prompt(user_input)
 
-        # Reset cancel state — a new turn always starts uninterrupted.
-        # request_interrupt() flipped between turns is intentionally ignored.
-        self._interrupt.clear()
-        self._current_task = None
-        self._max_iter_warned = False
+        self._reset_turn_state()
 
         log.info(
             "run_turn start prior_messages=%d input_chars=%d max_iterations=%d",
@@ -334,6 +351,46 @@ class AgentCore:
         else:
             messages.append(Message(role="user", content=[TextBlock(text=user_input)]))
 
+        return await self._run_loop(messages)
+
+    async def continue_run(self, messages: list[Message]) -> CycleResult:
+        """Re-enter the ReAct loop on an existing message list without
+        appending a fresh user turn.
+
+        Called by the TUI after a turn hit ``max_iterations`` and the user
+        pressed Enter to keep going. The iteration counter restarts from
+        0, the interrupt flag is cleared, and the wrap-up reminder will
+        fire again toward the new budget's end. Mutates ``messages`` in
+        place just like ``run_turn``.
+        """
+        self._reset_turn_state()
+        log.info(
+            "continue_run start prior_messages=%d max_iterations=%d",
+            len(messages),
+            self.max_iterations,
+        )
+        return await self._run_loop(messages)
+
+    def _reset_turn_state(self) -> None:
+        """Clear per-turn flags shared by ``run_turn`` / ``continue_run``.
+
+        Idempotent — the interrupt flag is cleared, the cancellable-task
+        handle dropped, and the one-shot max-iter warning re-armed so the
+        new budget gets its own wrap-up nudge.
+        """
+        # Reset cancel state — a new turn always starts uninterrupted.
+        # request_interrupt() flipped between turns is intentionally ignored.
+        self._interrupt.clear()
+        self._current_task = None
+        self._max_iter_warned = False
+
+    async def _run_loop(self, messages: list[Message]) -> CycleResult:
+        """Run the ReAct loop on ``messages`` for up to ``max_iterations``.
+
+        Shared body of ``run_turn`` and ``continue_run`` — neither
+        modifies ``messages`` before this point beyond appending the
+        user's new turn (run_turn) or nothing at all (continue_run).
+        """
         tool_calls: list[ToolCall] = []
         final_text_parts: list[str] = []
         total_in = 0
@@ -346,7 +403,17 @@ class AgentCore:
                     final_text_parts, "interrupted", i, tool_calls, total_in, total_out
                 )
 
-            microcompact(messages, keep_recent=3)
+            # Cadence: fire microcompact every `keep_recent` iterations
+            # (so iter 0 of every run_turn/continue_run always compacts,
+            # then iter keep_recent, 2*keep_recent, …). The recovery map
+            # carries originals so re-tiering uses fresh percentages off
+            # the unmodified content.
+            if i % self.keep_recent == 0:
+                microcompact(
+                    messages,
+                    recovery_map=self._recovery_map,
+                    keep_recent=self.keep_recent,
+                )
             await self._maybe_auto_compact(messages)
             self._drain_background(messages)
             self._drain_inbox(messages)
@@ -445,6 +512,7 @@ class AgentCore:
                 self._emit({"type": "compact", "reason": "manual via compress tool"})
                 messages[:] = await auto_compact(messages, llm=self.llm, system=self.system_prompt)
 
+        self._emit({"type": "max_iter_pause", "iterations": self.max_iterations})
         return self._result(
             final_text_parts,
             "max_iterations",
@@ -535,6 +603,8 @@ class AgentCore:
                     text="compressing conversation context...", ok=True
                 )
                 sentinel = "compress"
+            elif block.name == "recover_compacted_tool_use_result":
+                tool_result = self._handle_recover(tool_input)
             else:
                 tool_result = await tool_register.call_tool(block.name, tool_input)
 
@@ -568,6 +638,34 @@ class AgentCore:
                 used_todo = True
 
         return results, sentinel, used_todo
+
+    def _handle_recover(self, tool_input: dict[str, Any]) -> tool_register.ToolResult:
+        """Look up the requested ``tool_use_id`` in the per-instance
+        recovery map and return its full original content.
+
+        Intercepted in ``_dispatch_tool_uses`` rather than dispatched
+        through the registry because the map lives on the AgentCore
+        instance — the module-level handler in
+        ``tools/memory/recover_compacted_tool_use_result.py`` cannot
+        reach it and only exists so the tool registers cleanly.
+        """
+        tool_use_id = tool_input.get("tool_use_id")
+        if not isinstance(tool_use_id, str) or not tool_use_id:
+            return tool_register.ToolResult(
+                text="error: 'tool_use_id' is required and must be a non-empty string.",
+                ok=False,
+            )
+        original = self._recovery_map.get(tool_use_id)
+        if original is None:
+            return tool_register.ToolResult(
+                text=(
+                    f"error: no original content for tool_use_id={tool_use_id!r}. "
+                    "It was never compacted, the id is wrong, or auto_compact "
+                    "cleared the recovery map. Check the stub for the exact id."
+                ),
+                ok=False,
+            )
+        return tool_register.ToolResult(text=original, ok=True)
 
     async def _handle_wait(
         self,

@@ -40,6 +40,7 @@ from rich_senpai.tools.memory import (
     compress,
     idle,
     load_skill,
+    recover_compacted_tool_use_result,
     todo_write,
     update_master_profile,
     wait,
@@ -99,6 +100,7 @@ TOOL_GROUPS: dict[str, list[ModuleType]] = {
         idle,
         wait,
         update_master_profile,
+        recover_compacted_tool_use_result,
     ],
 }
 
