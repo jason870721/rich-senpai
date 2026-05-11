@@ -51,16 +51,24 @@ from rich_senpai.tools.messaging import send_message as send_message_tool
 from rich_senpai.tools.shell import bash as bash_tool
 from rich_senpai.tools.task_board import claim_task as claim_task_tool
 from rich_senpai.tools.tool_result import as_text
+from rich_senpai.tools.web import web_fetch as web_fetch_tool, web_search as web_search_tool
 
 
 log = get_logger(__name__)
 
 
-# Filesystem / shell tools the teammate can call directly through
+# Filesystem / shell / web tools the teammate can call directly through
 # `_FS_HANDLERS`. Messaging and task-board tools are dispatched manually
 # in `_dispatch` so they can be scoped to the teammate's identity rather
 # than the lead.
-_FS_TOOL_MODULES = (bash_tool, read_file_tool, write_file_tool, edit_file_tool)
+_FS_TOOL_MODULES = (
+    bash_tool,
+    read_file_tool,
+    write_file_tool,
+    edit_file_tool,
+    web_search_tool,
+    web_fetch_tool,
+)
 
 _FS_HANDLERS = {
     m.SPEC["name"]: getattr(m, m.__name__.rsplit(".", 1)[-1])

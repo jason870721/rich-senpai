@@ -60,6 +60,7 @@ from rich_senpai.tools.task_board import (
     task_list,
     task_update,
 )
+from rich_senpai.tools.web import web_fetch, web_search
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +102,10 @@ TOOL_GROUPS: dict[str, list[ModuleType]] = {
         wait,
         update_master_profile,
         recover_compacted_tool_use_result,
+    ],
+    "web_explore": [
+        web_search,
+        web_fetch,
     ],
 }
 

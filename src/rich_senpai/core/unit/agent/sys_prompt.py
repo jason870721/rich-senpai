@@ -188,6 +188,14 @@ sequence when one call's output feeds the next.
 ## Reading code
 - `read_file` — {_td('read_file')}
 
+## Exploring the web
+Use these when you need to look up live information beyond the local repo \
+— library docs, error messages, changelog entries, blog posts. Typical \
+flow: `web_search` to discover URLs, then `web_fetch` on the most promising \
+hit. Don't fetch speculatively — each call costs tokens.
+- `web_search` — {_td('web_search')}
+- `web_fetch` — {_td('web_fetch')}
+
 ## Editing files
 - **First choice**: `replace_in_file` — {_td('replace_in_file')} \
 Copy the exact text to replace as `old_str` (include enough context to be \

@@ -38,12 +38,16 @@ from rich_senpai.tools.memory.recover_compacted_tool_use_result import (
 )
 from rich_senpai.tools.shell import bash as bash_tool
 from rich_senpai.tools.tool_result import as_text
+from rich_senpai.tools.web import web_fetch as web_fetch_tool, web_search as web_search_tool
 
 
 # Tool sets the subagent exposes to the LLM. The recover tool ships with both
 # personas — it's intercepted below, not dispatched through `_HANDLERS`.
-_EXPLORE_MODULES = (bash_tool, read_file_tool)
-_GENERAL_MODULES = (bash_tool, read_file_tool, write_file_tool, edit_file_tool)
+# Web tools (search + fetch) are read-only so they ride with Explore as well
+# as General.
+_WEB_MODULES = (web_search_tool, web_fetch_tool)
+_EXPLORE_MODULES = (bash_tool, read_file_tool, *_WEB_MODULES)
+_GENERAL_MODULES = (bash_tool, read_file_tool, write_file_tool, edit_file_tool, *_WEB_MODULES)
 
 _EXPLORE_TOOLS = [m.SPEC for m in _EXPLORE_MODULES] + [_RECOVER_SPEC]
 _GENERAL_TOOLS = [m.SPEC for m in _GENERAL_MODULES] + [_RECOVER_SPEC]

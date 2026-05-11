@@ -598,6 +598,7 @@ class AgentCore:
                 clip(tool_input),
             )
 
+            ## compress and recover_compacted_tool_use_result are not stateless tool, can't just go tool_register.call_tool().
             if block.name == "compress":
                 tool_result = tool_register.ToolResult(
                     text="compressing conversation context...", ok=True
@@ -659,9 +660,8 @@ class AgentCore:
         if original is None:
             return tool_register.ToolResult(
                 text=(
-                    f"error: no original content for tool_use_id={tool_use_id!r}. "
-                    "It was never compacted, the id is wrong, or auto_compact "
-                    "cleared the recovery map. Check the stub for the exact id."
+                    f"error: no original content found for tool_use_id={tool_use_id!r}. "
+                    "Wrong id or result cache already expired."
                 ),
                 ok=False,
             )

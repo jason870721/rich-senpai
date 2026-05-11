@@ -83,7 +83,7 @@ MICROCOMPACT_MIN_KEEP_RECENT: int = 6
 # Soft FIFO cap on the per-loop recovery map — guards against unbounded
 # growth on very long sessions. Oldest entries evict first; an evicted
 # recovery call returns a clear error.
-MICROCOMPACT_RECOVERY_CAP: int = _int("MICROCOMPACT_RECOVERY_CAP", 200)
+MICROCOMPACT_RECOVERY_CAP: int = _int("MICROCOMPACT_RECOVERY_CAP", 300)
 # Compaction-skip threshold: leave tool_results shorter than this alone, since
 # the stub itself would be longer than the original.
 MICROCOMPACT_MIN_LEN: int = _int("MICROCOMPACT_MIN_LEN", 200)
@@ -108,3 +108,21 @@ TRANSCRIPT_DIR: Path = SENPAI_HOME / "transcripts"
 
 USER_PROFILE_PATH: str = _str("RICH_SENPAI_USER_PROFILE", str(SENPAI_HOME / "user_profile.md"))
 USER_PROFILE_TOKEN_BUDGET: int = _int("USER_PROFILE_TOKEN_BUDGET", 3000)
+
+# --- Web tools ------------------------------------------------------------
+# `web_fetch` HTTP request timeout (seconds). Distinct from
+# HTTP_DEFAULT_TIMEOUT which is consumed by the shell layer for curl-style
+# flows; this knob is exclusive to the web_fetch tool.
+WEB_FETCH_TIMEOUT: int = _int("WEB_FETCH_TIMEOUT", 30)
+# Default truncation cap for `web_fetch`. The handler also enforces a hard
+# 200_000 ceiling so a malicious or buggy override can't blow up context.
+WEB_FETCH_MAX_CHARS: int = _int("WEB_FETCH_MAX_CHARS", 20_000)
+# Default number of results returned by `web_search` (hard cap 15 in-tool).
+WEB_SEARCH_MAX_RESULTS: int = _int("WEB_SEARCH_MAX_RESULTS", 5)
+# DDG region code for `web_search`. 'wt-wt' = worldwide. Other examples:
+# 'us-en', 'uk-en', 'jp-jp'. Per-call `region` arg overrides this default.
+WEB_SEARCH_REGION: str = _str("WEB_SEARCH_REGION", "wt-wt")
+WEB_USER_AGENT: str = _str(
+    "WEB_USER_AGENT",
+    "rich-senpai/0.x (+https://github.com/Johnny1110/rich-senpai)",
+)
