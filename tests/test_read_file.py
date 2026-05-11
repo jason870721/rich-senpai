@@ -1,8 +1,14 @@
-"""Tests for the read_file tool — full reads, offset/limit slicing, and error paths."""
+"""Tests for the read_file tool — cat -n format, offset/limit slicing,
+tracker integration, and error paths."""
 
 import tempfile
 from pathlib import Path
 
+from rich_senpai.tools.file_access._session import (
+    ReadTracker,
+    reset_tracker,
+    set_tracker,
+)
 from rich_senpai.tools.file_access.read_file import read_file
 
 
@@ -14,8 +20,31 @@ def _write(path: Path, content: str) -> Path:
 
 
 def _lines(n: int) -> str:
-    """Generate a test file with N lines like 'line 1', 'line 2', etc."""
     return "\n".join(f"line {i}" for i in range(1, n + 1))
+
+
+# ── cat -n output format ─────────────────────────────────────────────────
+
+
+def test_output_uses_cat_n_format():
+    with tempfile.TemporaryDirectory() as tmp:
+        f = _write(Path(tmp) / "test.txt", "alpha\nbeta\ngamma")
+        result = read_file(str(f), allow_outside_workdir=True)
+        assert result.ok
+        # Each line prefixed with right-aligned 6-char lineno + tab.
+        assert "     1\talpha" in result.text
+        assert "     2\tbeta" in result.text
+        assert "     3\tgamma" in result.text
+
+
+def test_line_numbers_match_offset():
+    with tempfile.TemporaryDirectory() as tmp:
+        f = _write(Path(tmp) / "test.txt", _lines(20))
+        result = read_file(str(f), offset=12, limit=2, allow_outside_workdir=True)
+        assert result.ok
+        # Line numbers reflect the source line, not 1-based slice position.
+        assert "    12\tline 12" in result.text
+        assert "    13\tline 13" in result.text
 
 
 # ── full-file reads ──────────────────────────────────────────────────────
@@ -48,8 +77,9 @@ def test_offset_and_limit():
         result = read_file(str(f), offset=10, limit=5, allow_outside_workdir=True)
         assert result.ok
         assert "showing lines 10-14" in result.text
-        assert "line 10\nline 11\nline 12\nline 13\nline 14" in result.text
-        assert "line 9" not in result.text
+        for i in range(10, 15):
+            assert f"line {i}" in result.text
+        assert "line 9\n" not in result.text  # 9 should not appear as a row
         assert "line 15" not in result.text
 
 
@@ -61,7 +91,7 @@ def test_offset_only_reads_to_end():
         assert "showing lines 8-10" in result.text
         assert "line 8" in result.text
         assert "line 10" in result.text
-        assert "line 7" not in result.text
+        assert "line 7\n" not in result.text
 
 
 def test_limit_only_from_start():
@@ -69,7 +99,6 @@ def test_limit_only_from_start():
         f = _write(Path(tmp) / "test.txt", _lines(20))
         result = read_file(str(f), limit=3, allow_outside_workdir=True)
         assert result.ok
-        # offset defaults to 1 and limit=3 < total → slice
         assert "showing lines 1-3" in result.text
         assert "line 1" in result.text
         assert "line 3" in result.text
@@ -81,7 +110,6 @@ def test_limit_exceeds_total_shows_full_file():
         f = _write(Path(tmp) / "test.txt", _lines(5))
         result = read_file(str(f), limit=100, allow_outside_workdir=True)
         assert result.ok
-        # start=0, end=5 → full read, no "showing lines" suffix
         assert "showing lines" not in result.text
         assert "(5 lines)" in result.text
 
@@ -117,6 +145,31 @@ def test_single_line_slice():
         assert result.ok
         assert "showing lines 3-3" in result.text
         assert result.text.endswith("line 3")
+
+
+# ── session tracker integration ──────────────────────────────────────────
+
+
+def test_read_marks_file_in_tracker():
+    tracker = ReadTracker()
+    token = set_tracker(tracker)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            f = _write(Path(tmp) / "test.txt", "hello")
+            assert not tracker.was_read(f)
+            result = read_file(str(f), allow_outside_workdir=True)
+            assert result.ok
+            assert tracker.was_read(f)
+    finally:
+        reset_tracker(token)
+
+
+def test_no_tracker_set_is_noop():
+    # Default contextvar state — no tracker installed.
+    with tempfile.TemporaryDirectory() as tmp:
+        f = _write(Path(tmp) / "test.txt", "hello")
+        result = read_file(str(f), allow_outside_workdir=True)
+        assert result.ok  # tools work fine without a tracker
 
 
 # ── error paths ──────────────────────────────────────────────────────────

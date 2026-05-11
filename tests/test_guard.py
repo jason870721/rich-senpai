@@ -1,6 +1,6 @@
 """Path-traversal guard tests.
 
-Tests that all four file-access tools deny access outside WORKDIR
+Tests that all three file-access tools deny access outside WORKDIR
 by default and allow it when opt-in flag is set.
 """
 
@@ -16,7 +16,6 @@ from rich_senpai.tools.file_access._guard import (
 )
 from rich_senpai.tools.file_access.edit_file import edit_file
 from rich_senpai.tools.file_access.read_file import read_file
-from rich_senpai.tools.file_access.replace_in_file import replace_in_file
 from rich_senpai.tools.file_access.write_file import write_file
 
 
@@ -99,7 +98,7 @@ class TestEditFileGuard:
     def test_outside_workdir_denied(self, monkeypatch, tmp_path):
         monkeypatch.setattr("rich_senpai.tools.file_access._guard.config.WORKDIR", tmp_path)
         outside = Path(tempfile.gettempdir()) / "nope.txt"
-        result = edit_file(str(outside), "@@ -1,0 +1 @@\n+hi\n")
+        result = edit_file(str(outside), "old", "new")
         assert not result.ok
         assert "outside the workdir" in result.text
 
@@ -107,33 +106,12 @@ class TestEditFileGuard:
         monkeypatch.setattr("rich_senpai.tools.file_access._guard.config.WORKDIR", tmp_path)
         outside = Path(tempfile.gettempdir()) / "ok_edit.txt"
         try:
-            # Create file first via python
             outside.write_text("line\n")
             result = edit_file(
                 str(outside),
-                "@@ -1 +1 @@\n-line\n+changed\n",
+                "line",
+                "changed",
                 allow_outside_workdir=True,
-            )
-            assert result.ok
-        finally:
-            outside.unlink(missing_ok=True)
-
-
-class TestReplaceInFileGuard:
-    def test_outside_workdir_denied(self, monkeypatch, tmp_path):
-        monkeypatch.setattr("rich_senpai.tools.file_access._guard.config.WORKDIR", tmp_path)
-        outside = Path(tempfile.gettempdir()) / "no_replace.txt"
-        result = replace_in_file(str(outside), "old", "new")
-        assert not result.ok
-        assert "outside the workdir" in result.text
-
-    def test_allow_outside_workdir_bypasses(self, monkeypatch, tmp_path):
-        monkeypatch.setattr("rich_senpai.tools.file_access._guard.config.WORKDIR", tmp_path)
-        outside = Path(tempfile.gettempdir()) / "yes_replace.txt"
-        try:
-            outside.write_text("old")
-            result = replace_in_file(
-                str(outside), "old", "new", allow_outside_workdir=True
             )
             assert result.ok
         finally:

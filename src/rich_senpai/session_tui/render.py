@@ -83,9 +83,16 @@ def bar_block_body(
 
 
 def looks_like_diff(text: str) -> bool:
-    """Heuristic: a unified diff opens with `@@ `, `--- `, or `+++ `."""
+    """Heuristic: a unified diff opens with `@@ `, `--- `, or `+++ `.
+
+    Leading `#`-prefixed annotation lines (e.g. ``# replaced 4
+    occurrences`` from edit_file's replace_all path) are skipped so the
+    diff is still detected and rendered with colors.
+    """
     for line in text.splitlines():
         if not line.strip():
+            continue
+        if line.startswith("#"):
             continue
         return line.startswith("@@ ") or line.startswith("--- ") or line.startswith("+++ ")
     return False
@@ -183,7 +190,12 @@ def format_turn_footer(
 
 def render_diff_block(text: str, *, bar_style: str = BRAND) -> Text:
     """Render a unified-diff string with git-style colors, framed by
-    the same `│ ` bar as bar_block_body."""
+    the same `│ ` bar as bar_block_body.
+
+    `#`-prefixed annotation lines (e.g. ``# replaced 4 occurrences``)
+    render in italic BRAND so they stand out as metadata above the diff
+    body without being mistaken for added/removed content.
+    """
     lines = text.splitlines() or [""]
     out = Text()
     for i, line in enumerate(lines):
@@ -191,7 +203,9 @@ def render_diff_block(text: str, *, bar_style: str = BRAND) -> Text:
             out.append("\n")
         out.append("│ ", style=bar_style)
         out.append("⎿ " if i == 0 else "  ", style=bar_style)
-        if line.startswith("@@ "):
+        if line.startswith("#"):
+            style = f"italic {BRAND}"
+        elif line.startswith("@@ "):
             style = f"bold {BRAND}"
         elif line.startswith("+++ ") or line.startswith("--- "):
             style = "dim"

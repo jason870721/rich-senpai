@@ -69,6 +69,11 @@ from rich_senpai.core.llm import (
 from rich_senpai.core.logging_setup import clip, get_logger
 from rich_senpai.core.unit.agent.sys_prompt import get_system_prompt
 from rich_senpai.tools import tool_register
+from rich_senpai.tools.file_access._session import (
+    ReadTracker,
+    reset_tracker,
+    set_tracker,
+)
 
 
 log = get_logger(__name__)
@@ -160,6 +165,12 @@ class AgentCore:
         # HTTP request / sleep aborts mid-flight rather than running to
         # completion.
         self._current_task: asyncio.Task[Any] | None = None
+        # Per-conversation read-tracker for file_access tools. Persists
+        # across turns within this AgentCore instance so the agent doesn't
+        # have to re-read the same file every turn. Installed into the
+        # async-context contextvar at the start of each _run_loop and
+        # restored on exit so subagents/teams stay isolated.
+        self._read_tracker = ReadTracker()
 
     def close(self) -> None:
         pass
@@ -391,6 +402,13 @@ class AgentCore:
         modifies ``messages`` before this point beyond appending the
         user's new turn (run_turn) or nothing at all (continue_run).
         """
+        token = set_tracker(self._read_tracker)
+        try:
+            return await self._run_loop_body(messages)
+        finally:
+            reset_tracker(token)
+
+    async def _run_loop_body(self, messages: list[Message]) -> CycleResult:
         tool_calls: list[ToolCall] = []
         final_text_parts: list[str] = []
         total_in = 0

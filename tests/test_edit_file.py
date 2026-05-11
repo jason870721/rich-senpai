@@ -1,9 +1,18 @@
-"""Tests for edit_file — diff parse, apply, header synthesis, error paths."""
+"""Tests for the edit_file tool — string-replace semantics, replace_all,
+session read-first gate, and error paths."""
 
 import tempfile
 from pathlib import Path
 
+from rich_senpai.tools.file_access._session import (
+    ReadTracker,
+    reset_tracker,
+    set_tracker,
+)
 from rich_senpai.tools.file_access.edit_file import edit_file
+
+
+# ── helpers ──────────────────────────────────────────────────────────────
 
 
 def _write(path: Path, content: str) -> Path:
@@ -11,288 +20,186 @@ def _write(path: Path, content: str) -> Path:
     return path
 
 
-# ── happy paths ──────────────────────────────────────────────────────────
+# ── happy path ───────────────────────────────────────────────────────────
 
 
-def test_single_hunk_replacement():
+def test_single_match_replaced():
     with tempfile.TemporaryDirectory() as tmp:
-        f = _write(Path(tmp) / "f.txt", "line a\nline b\nline c\n")
-        diff = (
-            "@@ -1,3 +1,3 @@\n"
-            " line a\n"
-            "-line b\n"
-            "+line B!\n"
-            " line c\n"
-        )
-        result = edit_file(str(f), diff, allow_outside_workdir=True)
+        f = _write(Path(tmp) / "f.txt", "alpha beta gamma")
+        result = edit_file(str(f), "beta", "BETA", allow_outside_workdir=True)
         assert result.ok
-        assert f.read_text() == "line a\nline B!\nline c\n"
-        # Synthesized headers should be present
-        assert f"--- a/{f}" in result.text
-        assert f"+++ b/{f}" in result.text
+        assert f.read_text() == "alpha BETA gamma"
+        # Returns a unified diff for TUI rendering.
+        assert f"a/{f}" in result.text
+        assert "-beta" in result.text or "alpha beta gamma" in result.text
+        assert "+" in result.text
 
 
-def test_pure_addition_hunk():
-    with tempfile.TemporaryDirectory() as tmp:
-        f = _write(Path(tmp) / "f.txt", "first\nsecond\n")
-        diff = (
-            "@@ -1,2 +1,3 @@\n"
-            " first\n"
-            "+inserted\n"
-            " second\n"
-        )
-        result = edit_file(str(f), diff, allow_outside_workdir=True)
-        assert result.ok
-        assert f.read_text() == "first\ninserted\nsecond\n"
-
-
-def test_pure_removal_hunk():
+def test_multiline_old_and_new():
     with tempfile.TemporaryDirectory() as tmp:
         f = _write(Path(tmp) / "f.txt", "one\ntwo\nthree\n")
-        diff = (
-            "@@ -1,3 +1,2 @@\n"
-            " one\n"
-            "-two\n"
-            " three\n"
+        result = edit_file(
+            str(f),
+            "one\ntwo\n",
+            "ONE\nTWO\nEXTRA\n",
+            allow_outside_workdir=True,
         )
-        result = edit_file(str(f), diff, allow_outside_workdir=True)
         assert result.ok
-        assert f.read_text() == "one\nthree\n"
+        assert f.read_text() == "ONE\nTWO\nEXTRA\nthree\n"
 
 
-def test_multiple_hunks_in_one_diff():
+def test_whitespace_fidelity_tabs_vs_spaces():
     with tempfile.TemporaryDirectory() as tmp:
-        original = "a\nb\nc\nd\ne\nf\ng\n"
-        f = _write(Path(tmp) / "f.txt", original)
-        diff = (
-            "@@ -1,3 +1,3 @@\n"
-            " a\n"
-            "-b\n"
-            "+B\n"
-            " c\n"
-            "@@ -5,3 +5,3 @@\n"
-            " e\n"
-            "-f\n"
-            "+F\n"
-            " g\n"
+        # Source uses a tab; old_string with spaces should NOT match.
+        f = _write(Path(tmp) / "f.txt", "if x:\n\treturn 1\n")
+        result = edit_file(
+            str(f),
+            "    return 1",
+            "    return 42",
+            allow_outside_workdir=True,
         )
-        result = edit_file(str(f), diff, allow_outside_workdir=True)
-        assert result.ok
-        assert f.read_text() == "a\nB\nc\nd\ne\nF\ng\n"
-
-
-def test_advisory_counts_recounted():
-    """Header counts are advisory; the parser auto-recounts from body."""
-    with tempfile.TemporaryDirectory() as tmp:
-        f = _write(Path(tmp) / "f.txt", "x\ny\nz\n")
-        # Header says ",99 ,99" but body is what counts.
-        diff = (
-            "@@ -1,99 +1,99 @@\n"
-            " x\n"
-            "-y\n"
-            "+Y\n"
-            " z\n"
-        )
-
-
-# ── fuzzy line-number tolerance ─────────────────────────────────────────
-
-
-def test_fuzzy_old_start_too_early():
-    """Agent says line 1 but actual content starts at line 5 — fuzz finds it."""
-    with tempfile.TemporaryDirectory() as tmp:
-        f = _write(Path(tmp) / "f.txt", "# comment\n# comment\n# comment\n# comment\nline a\nline b\nline c\n")
-        diff = (
-            "@@ -1,3 +1,3 @@\n"
-            " line a\n"
-            "-line b\n"
-            "+line B!\n"
-            " line c\n"
-        )
-        result = edit_file(str(f), diff, allow_outside_workdir=True)
-        assert result.ok
-        assert f.read_text() == "# comment\n# comment\n# comment\n# comment\nline a\nline B!\nline c\n"
-
-
-def test_fuzzy_old_start_too_late():
-    """Agent says line 10 but actual content is at line 3 — fuzz finds it."""
-    with tempfile.TemporaryDirectory() as tmp:
-        f = _write(Path(tmp) / "f.txt", "line a\nline b\nline c\n")
-        diff = (
-            "@@ -10,3 +10,3 @@\n"
-            " line a\n"
-            "-line b\n"
-            "+line B!\n"
-            " line c\n"
-        )
-        result = edit_file(str(f), diff, allow_outside_workdir=True)
-        assert result.ok
-        assert f.read_text() == "line a\nline B!\nline c\n"
-
-
-def test_fuzzy_old_start_within_window():
-    """Agent is off by 5 lines — still within the ±20 fuzz window."""
-    with tempfile.TemporaryDirectory() as tmp:
-        f = _write(Path(tmp) / "f.txt", "\n\n\n\n\ntarget a\ntarget b\ntarget c\n")
-        diff = (
-            "@@ -1,3 +1,3 @@\n"
-            " target a\n"
-            "-target b\n"
-            "+TARGET B\n"
-            " target c\n"
-        )
-        result = edit_file(str(f), diff, allow_outside_workdir=True)
-        assert result.ok
-        assert f.read_text() == "\n\n\n\n\ntarget a\nTARGET B\ntarget c\n"
-
-
-def test_fuzzy_multiple_hunks_with_offset():
-    """Both hunks have wrong old_start — fuzz corrects each independently."""
-    with tempfile.TemporaryDirectory() as tmp:
-        original = "# header\n# header\na\nb\nc\nd\ne\nf\ng\n"
-        f = _write(Path(tmp) / "f.txt", original)
-        diff = (
-            "@@ -1,3 +1,3 @@\n"   # actually at line 3
-            " a\n"
-            "-b\n"
-            "+B\n"
-            " c\n"
-            "@@ -1,3 +1,3 @@\n"   # actually at line 7
-            " e\n"
-            "-f\n"
-            "+F\n"
-            " g\n"
-        )
-        result = edit_file(str(f), diff, allow_outside_workdir=True)
-        assert result.ok
-        assert f.read_text() == "# header\n# header\na\nB\nc\nd\ne\nF\ng\n"
-
-
-def test_fuzzy_still_fails_when_context_does_not_exist():
-    """Fuzz can't rescue a genuinely wrong context — still fails cleanly."""
-    with tempfile.TemporaryDirectory() as tmp:
-        f = _write(Path(tmp) / "f.txt", "completely\ndifferent\ncontent\n")
-        diff = (
-            "@@ -1,3 +1,3 @@\n"
-            " no such line\n"
-            "-another wrong\n"
-            "+correct\n"
-        )
-        result = edit_file(str(f), diff, allow_outside_workdir=True)
         assert not result.ok
-        assert "apply failed" in result.text
+        assert "not found" in result.text
+        assert f.read_text() == "if x:\n\treturn 1\n"  # untouched
 
 
-def test_fuzzy_pure_insertion_unchanged():
-    """Pure-insertion hunks (old_len=0) skip the fuzz search — no context."""
+def test_trailing_whitespace_preserved():
     with tempfile.TemporaryDirectory() as tmp:
-        f = _write(Path(tmp) / "f.txt", "first\nsecond\n")
-        diff = (
-            "@@ -1,2 +1,3 @@\n"
-            " first\n"
-            "+inserted\n"
-            " second\n"
-        )
-        result = edit_file(str(f), diff, allow_outside_workdir=True)
+        f = _write(Path(tmp) / "f.txt", "foo   \nbar\n")
+        result = edit_file(str(f), "bar", "BAR", allow_outside_workdir=True)
         assert result.ok
-        assert f.read_text() == "first\ninserted\nsecond\n"
+        # Trailing spaces on the first line survive.
+        assert f.read_text() == "foo   \nBAR\n"
 
 
-def test_diff_with_existing_file_headers_passes_through():
-    """Agent may paste a diff with `--- a/` / `+++ b/` already there."""
+# ── replace_all ──────────────────────────────────────────────────────────
+
+
+def test_replace_all_replaces_every_occurrence():
     with tempfile.TemporaryDirectory() as tmp:
-        f = _write(Path(tmp) / "f.txt", "alpha\nbeta\n")
-        diff = (
-            f"--- a/{f}\n"
-            f"+++ b/{f}\n"
-            "@@ -1,2 +1,2 @@\n"
-            "-alpha\n"
-            "+ALPHA\n"
-            " beta\n"
+        f = _write(Path(tmp) / "f.txt", "x x x y x")
+        result = edit_file(
+            str(f), "x", "X",
+            replace_all=True,
+            allow_outside_workdir=True,
         )
-        result = edit_file(str(f), diff, allow_outside_workdir=True)
         assert result.ok
-        assert f.read_text() == "ALPHA\nbeta\n"
-        # Header should not be double-prefixed
-        assert result.text.count("--- a/") == 1
+        assert f.read_text() == "X X X y X"
+        assert "replaced 4 occurrences" in result.text
+
+
+def test_replace_all_single_match_does_not_annotate_count():
+    with tempfile.TemporaryDirectory() as tmp:
+        f = _write(Path(tmp) / "f.txt", "alpha")
+        result = edit_file(
+            str(f), "alpha", "ALPHA",
+            replace_all=True,
+            allow_outside_workdir=True,
+        )
+        assert result.ok
+        assert f.read_text() == "ALPHA"
+        assert "replaced 1 occurrences" not in result.text
+
+
+def test_multiple_matches_without_replace_all_refused():
+    with tempfile.TemporaryDirectory() as tmp:
+        f = _write(Path(tmp) / "f.txt", "x x x")
+        result = edit_file(str(f), "x", "Y", allow_outside_workdir=True)
+        assert not result.ok
+        assert "matches 3 locations" in result.text
+        assert "replace_all=true" in result.text
+        assert f.read_text() == "x x x"  # untouched
 
 
 # ── error paths ──────────────────────────────────────────────────────────
 
 
-def test_missing_file():
-    diff = "@@ -1,1 +1,1 @@\n-old\n+new\n"
-    result = edit_file("/tmp/__nonexistent_rich_senpai_edit__", diff, allow_outside_workdir=True)
+def test_old_string_not_found():
+    with tempfile.TemporaryDirectory() as tmp:
+        f = _write(Path(tmp) / "f.txt", "hello world")
+        result = edit_file(str(f), "goodbye", "hi", allow_outside_workdir=True)
+        assert not result.ok
+        assert "not found" in result.text
+        assert "re-read" in result.text.lower()
+        assert f.read_text() == "hello world"
+
+
+def test_identical_old_and_new_refused():
+    with tempfile.TemporaryDirectory() as tmp:
+        f = _write(Path(tmp) / "f.txt", "alpha")
+        result = edit_file(str(f), "alpha", "alpha", allow_outside_workdir=True)
+        assert not result.ok
+        assert "identical" in result.text
+        assert f.read_text() == "alpha"
+
+
+def test_file_not_found():
+    result = edit_file(
+        "/tmp/__nonexistent_rich_senpai_edit_test__",
+        "a", "b",
+        allow_outside_workdir=True,
+    )
     assert not result.ok
     assert "file not found" in result.text
 
 
 def test_directory_not_file():
     with tempfile.TemporaryDirectory() as tmp:
-        diff = "@@ -1,1 +1,1 @@\n-old\n+new\n"
-        result = edit_file(tmp, diff, allow_outside_workdir=True)
+        result = edit_file(tmp, "a", "b", allow_outside_workdir=True)
         assert not result.ok
         assert "not a regular file" in result.text
 
 
-def test_empty_diff_parse_error():
+# ── session read-first gate ──────────────────────────────────────────────
+
+
+def test_edit_without_prior_read_refused():
+    tracker = ReadTracker()
+    token = set_tracker(tracker)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            f = _write(Path(tmp) / "f.txt", "hello")
+            result = edit_file(str(f), "hello", "hi", allow_outside_workdir=True)
+            assert not result.ok
+            assert "must use read_file" in result.text
+            assert f.read_text() == "hello"
+    finally:
+        reset_tracker(token)
+
+
+def test_edit_after_read_succeeds():
+    tracker = ReadTracker()
+    token = set_tracker(tracker)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            f = _write(Path(tmp) / "f.txt", "hello")
+            tracker.mark_read(f)
+            result = edit_file(str(f), "hello", "hi", allow_outside_workdir=True)
+            assert result.ok
+            assert f.read_text() == "hi"
+    finally:
+        reset_tracker(token)
+
+
+def test_no_tracker_skips_gate():
+    # No tracker installed in this contextvar slot.
     with tempfile.TemporaryDirectory() as tmp:
-        f = _write(Path(tmp) / "f.txt", "a\n")
-        result = edit_file(str(f), "", allow_outside_workdir=True)
-        assert not result.ok
-        assert "parse failed" in result.text
+        f = _write(Path(tmp) / "f.txt", "hello")
+        result = edit_file(str(f), "hello", "hi", allow_outside_workdir=True)
+        assert result.ok
+        assert f.read_text() == "hi"
 
 
-def test_malformed_diff_no_hunk_header():
-    with tempfile.TemporaryDirectory() as tmp:
-        f = _write(Path(tmp) / "f.txt", "a\nb\n")
-        result = edit_file(str(f), "this is not a diff at all\n", allow_outside_workdir=True)
-        assert not result.ok
-        assert "parse failed" in result.text
-
-
-def test_context_mismatch_apply_error():
-    """Context line doesn't match the file — fails with a targeted error."""
-    with tempfile.TemporaryDirectory() as tmp:
-        f = _write(Path(tmp) / "f.txt", "actual\nbeta\n")
-        diff = (
-            "@@ -1,2 +1,2 @@\n"
-            " wrong context\n"
-            "-beta\n"
-            "+BETA\n"
-        )
-        result = edit_file(str(f), diff, allow_outside_workdir=True)
-        assert not result.ok
-        assert "apply failed" in result.text
-        # Per the SPEC, mismatch errors should tell the agent to re-read.
-        assert "Re-read" in result.text or "re-read" in result.text
-
-
-def test_removal_mismatch_apply_error():
-    with tempfile.TemporaryDirectory() as tmp:
-        f = _write(Path(tmp) / "f.txt", "x\ny\n")
-        diff = (
-            "@@ -1,2 +1,2 @@\n"
-            " x\n"
-            "-NOT_Y\n"
-            "+Y\n"
-        )
-        result = edit_file(str(f), diff, allow_outside_workdir=True)
-        assert not result.ok
-        assert "apply failed" in result.text
-
-
-def test_file_unchanged_on_apply_failure():
-    """A failed apply must not corrupt the file."""
-    with tempfile.TemporaryDirectory() as tmp:
-        original = "preserve\nme\n"
-        f = _write(Path(tmp) / "f.txt", original)
-        diff = (
-            "@@ -1,2 +1,2 @@\n"
-            "-bogus\n"
-            "+nope\n"
-            " me\n"
-        )
-        result = edit_file(str(f), diff, allow_outside_workdir=True)
-        assert not result.ok
-        assert f.read_text() == original
+def test_successful_edit_marks_file_as_read():
+    tracker = ReadTracker()
+    token = set_tracker(tracker)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            f = _write(Path(tmp) / "f.txt", "v1")
+            tracker.mark_read(f)
+            assert edit_file(str(f), "v1", "v2", allow_outside_workdir=True).ok
+            # Second edit doesn't require an explicit re-read.
+            assert edit_file(str(f), "v2", "v3", allow_outside_workdir=True).ok
+            assert f.read_text() == "v3"
+    finally:
+        reset_tracker(token)
