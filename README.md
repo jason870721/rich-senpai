@@ -72,8 +72,10 @@ cd rich-senpai
 python -m venv .venv
 source .venv/bin/activate
 
-# 3. Install dependencies
-pip install -r requirements.txt
+# 3. Install the package (editable for development; drop -e for plain installs)
+pip install -e .
+# For dev (tests, linting, type-check):
+#   pip install -e ".[dev]"
 
 # 4. Configure your LLM provider
 cp .env.example .env
@@ -83,7 +85,7 @@ cp .env.example .env
 #   - OLLAMA_MODEL=<model-name>       (if using Ollama)
 
 # 5. Run the TUI
-python main.py
+rich-senpai
 ```
 
 ### TUI controls
@@ -122,56 +124,61 @@ Type these in the chat panel:
 
 ```
 rich-senpai/
-├── main.py                          # Entry point — wires logging then launches the TUI
-├── requirements.txt
+├── pyproject.toml                   # PEP 621 metadata, deps, entry point, ruff/pyright/pytest config
+├── requirements.txt                 # Legacy install path (mirrors pyproject deps)
 ├── .env.example                     # Configuration template (LLM provider, paths, knobs)
 ├── README.md
-├── .senpai/
+├── LICENSE
+├── .senpai/                         # Runtime artifacts (created on first run; gitignored)
 │   └── skills/                      # Loadable skill bundles (<name>/SKILL.md)
 │
-├── core/                            # Agent runtime
-│   ├── __init__.py                  # Public API: AgentCore, CycleResult, ToolCall
-│   ├── config.py                    # All tunable constants (env-driven, single source of truth)
-│   ├── state.py                     # Process-wide singletons (TODO, SKILLS, TASK_MGR, BG, BUS, …)
-│   ├── logging_setup.py             # File-based logging + payload clipping helpers
-│   ├── llm/                         # Provider-neutral LLM layer
-│   │   ├── base.py                  #   Abstract LLMClient + Message / block types
-│   │   ├── anthropic_client.py      #   Anthropic adapter
-│   │   └── ollama_client.py         #   Ollama adapter
-│   └── unit/                        # Categorized sub-systems
-│       ├── agent/                   #   Lead ReAct loop
-│       │   ├── agent_core.py        #     The loop itself (compaction, dispatch, nags)
-│       │   ├── compaction.py        #     microcompact / auto_compact / estimate_tokens
-│       │   └── sys_prompt.py        #     System prompt builder (config + live skills)
-│       ├── subagent/
-│       │   └── subagent.py          #   Short-lived ReAct loop for the `task` tool
-│       ├── team/                    #   Multi-agent collaboration
-│       │   ├── team.py              #     TeammateManager — persistent asyncio teammates
-│       │   ├── tasks_file.py        #     TaskManager — JSON-per-task on disk
-│       │   └── messaging.py         #     MessageBus + plan/shutdown request registries
-│       └── manager/                 #   Singleton-backed managers
-│           ├── todos.py             #     TodoManager (ephemeral in-process todo list)
-│           ├── skills.py            #     SkillLoader (.senpai/skills discovery)
-│           └── background.py        #     BackgroundManager (fire-and-forget shell tasks)
-│
-├── tools/                           # Lead-agent tool surface
-│   ├── README.md                    # Module contract (SPEC + matching callable, ToolResult)
-│   ├── tool_register.py             # Imports every tool, builds TOOL_SPECS + call_tool()
-│   ├── tool_result.py               # ToolResult dataclass + as_text helper
-│   ├── file_access/                 #   read_file, write_file, edit_file, grep, _diff (helper)
-│   ├── shell/                       #   bash, background_run, check_background, http_request
-│   ├── task_board/                  #   task_create / get / update / list / claim_task
-│   ├── delegation/                  #   task, spawn_teammate, list_teammates
-│   ├── messaging/                   #   send_message, read_inbox, broadcast, shutdown_request, plan_approval
-│   └── memory/                      #   update_short_memory, todo_write, load_skill, compress, idle, wait
-│
-└── session_tui/                     # Textual TUI front-end
-    ├── tui.py                       # App shell — chat input, panels, event loop
-    ├── events.py                    # Render agent events → log lines
-    ├── commands.py                  # In-chat slash commands (/clear, /help, …)
-    ├── panels.py                    # Live status panels (background, coworkers, todos)
-    ├── render.py / widgets.py / welcome.py / theme.py
-    └── ...
+└── src/rich_senpai/                 # Importable package
+    ├── __init__.py                  # __version__
+    ├── cli.py                       # Console entrypoint — wires logging then launches the TUI
+    │
+    ├── core/                        # Agent runtime
+    │   ├── __init__.py              # Public API: AgentCore, CycleResult, ToolCall
+    │   ├── config.py                # All tunable constants (env-driven, single source of truth)
+    │   ├── state.py                 # Process-wide singletons (TODO, SKILLS, TASK_MGR, BG, BUS, …)
+    │   ├── logging_setup.py         # File-based logging + payload clipping helpers
+    │   ├── llm/                     # Provider-neutral LLM layer
+    │   │   ├── base.py              #   Abstract LLMClient + Message / block types
+    │   │   ├── anthropic_client.py  #   Anthropic adapter
+    │   │   └── ollama_client.py     #   Ollama adapter
+    │   └── unit/                    # Categorized sub-systems
+    │       ├── agent/               #   Lead ReAct loop
+    │       │   ├── agent_core.py    #     The loop itself (compaction, dispatch, nags)
+    │       │   ├── compaction.py    #     microcompact / auto_compact / estimate_tokens
+    │       │   └── sys_prompt.py    #     System prompt builder (config + live skills)
+    │       ├── subagent/
+    │       │   └── subagent.py      #   Short-lived ReAct loop for the `task` tool
+    │       ├── team/                #   Multi-agent collaboration
+    │       │   ├── team.py          #     TeammateManager — persistent asyncio teammates
+    │       │   ├── tasks_file.py    #     TaskManager — JSON-per-task on disk
+    │       │   └── messaging.py     #     MessageBus + plan/shutdown request registries
+    │       └── manager/             #   Singleton-backed managers
+    │           ├── todos.py         #     TodoManager (ephemeral in-process todo list)
+    │           ├── skills.py        #     SkillLoader (.senpai/skills discovery)
+    │           └── background.py    #     BackgroundManager (fire-and-forget shell tasks)
+    │
+    ├── tools/                       # Lead-agent tool surface
+    │   ├── README.md                # Module contract (SPEC + matching callable, ToolResult)
+    │   ├── tool_register.py         # Imports every tool, builds TOOL_SPECS + call_tool()
+    │   ├── tool_result.py           # ToolResult dataclass + as_text helper
+    │   ├── file_access/             #   read_file, write_file, edit_file, grep, _diff (helper)
+    │   ├── shell/                   #   bash, background_run, check_background, http_request
+    │   ├── task_board/              #   task_create / get / update / list / claim_task
+    │   ├── delegation/              #   task, spawn_teammate, list_teammates
+    │   ├── messaging/               #   send_message, read_inbox, broadcast, shutdown_request, plan_approval
+    │   └── memory/                  #   update_short_memory, todo_write, load_skill, compress, idle, wait
+    │
+    └── session_tui/                 # Textual TUI front-end
+        ├── tui.py                   # App shell — chat input, panels, event loop
+        ├── events.py                # Render agent events → log lines
+        ├── commands.py              # In-chat slash commands (/clear, /help, …)
+        ├── panels.py                # Live status panels (background, coworkers, todos)
+        ├── render.py / widgets.py / welcome.py / style.py
+        └── ...
 ```
 
 <br>

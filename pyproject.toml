@@ -1,0 +1,125 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rich-senpai"
+description = "An autonomous multi-agent system for trading — multi-agent TUI built on Anthropic / Ollama."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.12"
+authors = [
+  { name = "Johnny Wang" },
+]
+keywords = ["agent", "llm", "anthropic", "ollama", "tui", "multi-agent"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: MacOS",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Software Development",
+  "Topic :: Terminals",
+]
+dependencies = [
+  "anthropic>=0.100.0",
+  "ollama>=0.6.0",
+  "python-dotenv>=1.0.0",
+  "requests>=2.31.0",
+  "tiktoken>=0.7.0",
+  "rich>=13.7.0",
+  "textual>=0.50.0",
+]
+dynamic = ["version"]
+
+[project.optional-dependencies]
+dev = [
+  "build>=1.2",
+  "pre-commit>=3.7",
+  "pyright>=1.1.380",
+  "pytest>=8.0",
+  "pytest-asyncio>=0.23",
+  "pytest-cov>=5.0",
+  "ruff>=0.6",
+]
+
+[project.urls]
+Homepage = "https://github.com/Johnny1110/rich-senpai"
+Repository = "https://github.com/Johnny1110/rich-senpai"
+Issues = "https://github.com/Johnny1110/rich-senpai/issues"
+
+[project.scripts]
+rich-senpai = "rich_senpai.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["rich_senpai*"]
+
+[tool.setuptools.package-data]
+rich_senpai = [
+  "session_tui/assets/*.txt",
+  "session_tui/styles.tcss",
+]
+
+[tool.setuptools.dynamic]
+version = { attr = "rich_senpai.__version__" }
+
+# --- Ruff ----------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+extend-exclude = ["venv", ".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = [
+  "E501",  # long lines — formatter handles wrapping; many docstrings exceed 100
+  "B008",  # function calls in defaults — used legitimately in tool SPECs
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B011", "SIM117"]
+
+# --- Pyright -------------------------------------------------------------
+[tool.pyright]
+include = ["src/rich_senpai"]
+exclude = ["venv", ".venv", "**/__pycache__"]
+pythonVersion = "3.12"
+reportMissingImports = "error"
+reportMissingTypeStubs = "none"
+typeCheckingMode = "basic"
+
+# --- Pytest --------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
+asyncio_mode = "auto"
+filterwarnings = [
+  "error",
+  "ignore::DeprecationWarning:textual.*",
+]
+
+# --- Coverage ------------------------------------------------------------
+# --- Coverage ------------------------------------------------------------
+[tool.coverage.run]
+branch = true
+source = ["rich_senpai"]
+omit = [
+  "src/rich_senpai/session_tui/welcome.py",  # ASCII banner; not worth covering
+]
+
+[tool.coverage.report]
+exclude_lines = [
+  "pragma: no cover",
+  "raise NotImplementedError",
+  "if __name__ == .__main__.:",
+  "if TYPE_CHECKING:",
+]
