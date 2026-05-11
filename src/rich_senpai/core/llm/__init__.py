@@ -7,7 +7,8 @@ directly.
 """
 from __future__ import annotations
 
-from rich_senpai.core.llm.anthropic_client import AnthropicLLMClient
+import os
+
 from rich_senpai.core.llm.base import (
     ContentBlock,
     LLMClient,
@@ -18,15 +19,18 @@ from rich_senpai.core.llm.base import (
     ToolUseBlock,
     Usage,
 )
+from rich_senpai.core.llm.deepseek_client import DeepseekLLMClient
 from rich_senpai.core.llm.ollama_client import OllamaLLMClient
+from rich_senpai.core.llm.anthropic_client import AnthropicLLMClient
 
 __all__ = [
     "AnthropicLLMClient",
+    "DeepseekLLMClient",
+    "OllamaLLMClient",
     "ContentBlock",
     "LLMClient",
     "LLMResponse",
     "Message",
-    "OllamaLLMClient",
     "TextBlock",
     "ToolResultBlock",
     "ToolUseBlock",
@@ -41,9 +45,17 @@ def build_default_client() -> LLMClient:
 
     provider = config.LLM_PROVIDER
     if provider == "anthropic":
+        # export ANTHROPIC_API_KEY=config.LLM_PROVIDER
+        os.environ.setdefault("ANTHROPIC_API_KEY", config.LLM_API_KEY)
         return AnthropicLLMClient()
     if provider == "ollama":
         return OllamaLLMClient()
+    if provider == "deepseek":
+        # export ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic
+        # export ANTHROPIC_API_KEY=config.LLM_PROVIDER
+        os.environ.setdefault("ANTHROPIC_BASE_URL", "https://api.deepseek.com/anthropic")
+        os.environ.setdefault("ANTHROPIC_API_KEY", config.LLM_API_KEY)
+        return DeepseekLLMClient()
     raise ValueError(
         f"Unknown LLM_PROVIDER '{provider}'. "
         f"Valid values: anthropic, ollama."

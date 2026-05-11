@@ -35,6 +35,7 @@ def _str(name: str, default: str) -> str:
 # Which provider AgentCore wires up by default. "anthropic" uses
 # core/llm/anthropic_client.py; "ollama" uses core/llm/ollama_client.py.
 LLM_PROVIDER: str = _str("LLM_PROVIDER", "anthropic").lower()
+LLM_API_KEY: str = _str("LLM_API_KEY", "")
 
 # Model id. Default is an Anthropic Haiku tag; for Ollama set this to a
 # local model tag like "qwen3.6:latest" or "qwen2.5:7b".

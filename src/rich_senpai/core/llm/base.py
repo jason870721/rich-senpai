@@ -37,8 +37,16 @@ class ToolResultBlock:
     content: str
     type: str = "tool_result"
 
+@dataclass
+class ThinkingBlock:
+    thinking: str
+    signature: str
 
-ContentBlock = Union[TextBlock, ToolUseBlock, ToolResultBlock]
+@dataclass
+class RedactedThinkingBlock:
+    data: str
+
+ContentBlock = Union[TextBlock, ToolUseBlock, ToolResultBlock, RedactedThinkingBlock, ThinkingBlock]
 
 
 @dataclass
