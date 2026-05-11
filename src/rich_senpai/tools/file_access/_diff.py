@@ -153,28 +153,54 @@ def _join_with_policy(lines: list[str], trailing_nl: bool) -> str:
     return "\n".join(lines) + ("\n" if trailing_nl else "")
 
 
+# Number of lines to search above/below the claimed position when the
+# agent's line numbers are off.  Mirrors `patch(1)` fuzz factor.
+_FUZZ = 20
+
+
+def _find_anchor(lines: list[str], h: Hunk, zero_idx: int) -> int:
+    """Search ±_FUZZ lines around *zero_idx* for the first context/removal
+    lines of *h* (up to 3).  Return the adjusted zero_idx if found;
+    otherwise return *zero_idx* unchanged — the strict loop will produce
+    a detailed mismatch error."""
+    anchor: list[str] = []
+    for bl in h.lines:
+        if bl[0] in (" ", "-"):
+            anchor.append(bl[1:])
+        if len(anchor) >= 3:
+            break
+    if not anchor:
+        return zero_idx
+    # Search outward so the closest match wins.
+    n = len(lines)
+    for delta in range(_FUZZ + 1):
+        for try_offset in (delta, -delta):
+            try_idx = zero_idx + try_offset
+            if try_idx < 0 or try_idx + len(anchor) > n:
+                continue
+            if all(
+                lines[try_idx + j] == anchor[j] for j in range(len(anchor))
+            ):
+                return try_idx
+    return zero_idx
+
+
 def apply_hunks(original: str, hunks: list[Hunk]) -> str:
     """Apply hunks to ``original``. Hunks reference original-file line
     numbers (1-indexed); we track a running offset across hunks.
 
-    Verifies ' ' (context) and '-' (remove) lines match the file
-    byte-for-byte. On mismatch raises DiffApplyError with a message
-    pinpointing the divergent line."""
+    The agent's line numbers are treated as a hint — each hunk searches
+    ±_FUZZ lines around the claimed position for its first context lines
+    (fuzz factor).  Once positioned, every ' ' (context) and '-' (removal)
+    line is verified byte-for-byte.  On mismatch raises DiffApplyError
+    with a message pinpointing the divergent line."""
     lines, trailing_nl = _split_keep_trailing_nl(original)
     offset = 0  # net delta applied so far (new_len - old_len summed)
 
-    # Reject overlapping hunks: each hunk's old region must start at or
-    # after the previous hunk's old end.
-    prev_end = 0
-    for h in sorted(hunks, key=lambda x: x.old_start):
-        if h.old_start < prev_end:
-            raise DiffApplyError(
-                f"overlapping hunk at @@ -{h.old_start},{h.old_len} @@ "
-                f"(previous hunk ended at line {prev_end})"
-            )
-        prev_end = h.old_start + h.old_len
-
     # Apply in declared order, using offset to translate old→current.
+    # Note: we do NOT reject overlapping hunks.  The agent's line numbers
+    # are a hint — fuzzy matching moves each hunk independently, so two
+    # hunks with the same declared old_start can target different regions.
     for h in hunks:
         # Re-validate region, using the *current* (offset-adjusted) index.
         # 0-indexed position in the working list:
@@ -187,6 +213,10 @@ def apply_hunks(original: str, hunks: list[Hunk]) -> str:
                     f"hunk @@ -{h.old_start},0 @@ insertion point out of range "
                     f"(file has {len(lines) - offset} lines)"
                 )
+        # Search for context within a window so small line-number errors
+        # from the agent don't cause spurious failures.
+        zero_idx = _find_anchor(lines, h, zero_idx)
+
         # Walk the body, matching ' '/'-' against the file.
         cursor = zero_idx
         replacement: list[str] = []

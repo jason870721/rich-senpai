@@ -24,7 +24,7 @@ def test_single_hunk_replacement():
             "+line B!\n"
             " line c\n"
         )
-        result = edit_file(str(f), diff)
+        result = edit_file(str(f), diff, allow_outside_workdir=True)
         assert result.ok
         assert f.read_text() == "line a\nline B!\nline c\n"
         # Synthesized headers should be present
@@ -41,7 +41,7 @@ def test_pure_addition_hunk():
             "+inserted\n"
             " second\n"
         )
-        result = edit_file(str(f), diff)
+        result = edit_file(str(f), diff, allow_outside_workdir=True)
         assert result.ok
         assert f.read_text() == "first\ninserted\nsecond\n"
 
@@ -55,7 +55,7 @@ def test_pure_removal_hunk():
             "-two\n"
             " three\n"
         )
-        result = edit_file(str(f), diff)
+        result = edit_file(str(f), diff, allow_outside_workdir=True)
         assert result.ok
         assert f.read_text() == "one\nthree\n"
 
@@ -76,7 +76,7 @@ def test_multiple_hunks_in_one_diff():
             "+F\n"
             " g\n"
         )
-        result = edit_file(str(f), diff)
+        result = edit_file(str(f), diff, allow_outside_workdir=True)
         assert result.ok
         assert f.read_text() == "a\nB\nc\nd\ne\nF\ng\n"
 
@@ -93,9 +93,109 @@ def test_advisory_counts_recounted():
             "+Y\n"
             " z\n"
         )
-        result = edit_file(str(f), diff)
+
+
+# ── fuzzy line-number tolerance ─────────────────────────────────────────
+
+
+def test_fuzzy_old_start_too_early():
+    """Agent says line 1 but actual content starts at line 5 — fuzz finds it."""
+    with tempfile.TemporaryDirectory() as tmp:
+        f = _write(Path(tmp) / "f.txt", "# comment\n# comment\n# comment\n# comment\nline a\nline b\nline c\n")
+        diff = (
+            "@@ -1,3 +1,3 @@\n"
+            " line a\n"
+            "-line b\n"
+            "+line B!\n"
+            " line c\n"
+        )
+        result = edit_file(str(f), diff, allow_outside_workdir=True)
         assert result.ok
-        assert f.read_text() == "x\nY\nz\n"
+        assert f.read_text() == "# comment\n# comment\n# comment\n# comment\nline a\nline B!\nline c\n"
+
+
+def test_fuzzy_old_start_too_late():
+    """Agent says line 10 but actual content is at line 3 — fuzz finds it."""
+    with tempfile.TemporaryDirectory() as tmp:
+        f = _write(Path(tmp) / "f.txt", "line a\nline b\nline c\n")
+        diff = (
+            "@@ -10,3 +10,3 @@\n"
+            " line a\n"
+            "-line b\n"
+            "+line B!\n"
+            " line c\n"
+        )
+        result = edit_file(str(f), diff, allow_outside_workdir=True)
+        assert result.ok
+        assert f.read_text() == "line a\nline B!\nline c\n"
+
+
+def test_fuzzy_old_start_within_window():
+    """Agent is off by 5 lines — still within the ±20 fuzz window."""
+    with tempfile.TemporaryDirectory() as tmp:
+        f = _write(Path(tmp) / "f.txt", "\n\n\n\n\ntarget a\ntarget b\ntarget c\n")
+        diff = (
+            "@@ -1,3 +1,3 @@\n"
+            " target a\n"
+            "-target b\n"
+            "+TARGET B\n"
+            " target c\n"
+        )
+        result = edit_file(str(f), diff, allow_outside_workdir=True)
+        assert result.ok
+        assert f.read_text() == "\n\n\n\n\ntarget a\nTARGET B\ntarget c\n"
+
+
+def test_fuzzy_multiple_hunks_with_offset():
+    """Both hunks have wrong old_start — fuzz corrects each independently."""
+    with tempfile.TemporaryDirectory() as tmp:
+        original = "# header\n# header\na\nb\nc\nd\ne\nf\ng\n"
+        f = _write(Path(tmp) / "f.txt", original)
+        diff = (
+            "@@ -1,3 +1,3 @@\n"   # actually at line 3
+            " a\n"
+            "-b\n"
+            "+B\n"
+            " c\n"
+            "@@ -1,3 +1,3 @@\n"   # actually at line 7
+            " e\n"
+            "-f\n"
+            "+F\n"
+            " g\n"
+        )
+        result = edit_file(str(f), diff, allow_outside_workdir=True)
+        assert result.ok
+        assert f.read_text() == "# header\n# header\na\nB\nc\nd\ne\nF\ng\n"
+
+
+def test_fuzzy_still_fails_when_context_does_not_exist():
+    """Fuzz can't rescue a genuinely wrong context — still fails cleanly."""
+    with tempfile.TemporaryDirectory() as tmp:
+        f = _write(Path(tmp) / "f.txt", "completely\ndifferent\ncontent\n")
+        diff = (
+            "@@ -1,3 +1,3 @@\n"
+            " no such line\n"
+            "-another wrong\n"
+            "+correct\n"
+        )
+        result = edit_file(str(f), diff, allow_outside_workdir=True)
+        assert not result.ok
+        assert "apply failed" in result.text
+
+
+def test_fuzzy_pure_insertion_unchanged():
+    """Pure-insertion hunks (old_len=0) skip the fuzz search — no context."""
+    with tempfile.TemporaryDirectory() as tmp:
+        f = _write(Path(tmp) / "f.txt", "first\nsecond\n")
+        diff = (
+            "@@ -1,2 +1,3 @@\n"
+            " first\n"
+            "+inserted\n"
+            " second\n"
+        )
+        result = edit_file(str(f), diff, allow_outside_workdir=True)
+        assert result.ok
+        assert f.read_text() == "first\ninserted\nsecond\n"
 
 
 def test_diff_with_existing_file_headers_passes_through():
@@ -110,7 +210,7 @@ def test_diff_with_existing_file_headers_passes_through():
             "+ALPHA\n"
             " beta\n"
         )
-        result = edit_file(str(f), diff)
+        result = edit_file(str(f), diff, allow_outside_workdir=True)
         assert result.ok
         assert f.read_text() == "ALPHA\nbeta\n"
         # Header should not be double-prefixed
@@ -122,7 +222,7 @@ def test_diff_with_existing_file_headers_passes_through():
 
 def test_missing_file():
     diff = "@@ -1,1 +1,1 @@\n-old\n+new\n"
-    result = edit_file("/tmp/__nonexistent_rich_senpai_edit__", diff)
+    result = edit_file("/tmp/__nonexistent_rich_senpai_edit__", diff, allow_outside_workdir=True)
     assert not result.ok
     assert "file not found" in result.text
 
@@ -130,7 +230,7 @@ def test_missing_file():
 def test_directory_not_file():
     with tempfile.TemporaryDirectory() as tmp:
         diff = "@@ -1,1 +1,1 @@\n-old\n+new\n"
-        result = edit_file(tmp, diff)
+        result = edit_file(tmp, diff, allow_outside_workdir=True)
         assert not result.ok
         assert "not a regular file" in result.text
 
@@ -138,7 +238,7 @@ def test_directory_not_file():
 def test_empty_diff_parse_error():
     with tempfile.TemporaryDirectory() as tmp:
         f = _write(Path(tmp) / "f.txt", "a\n")
-        result = edit_file(str(f), "")
+        result = edit_file(str(f), "", allow_outside_workdir=True)
         assert not result.ok
         assert "parse failed" in result.text
 
@@ -146,7 +246,7 @@ def test_empty_diff_parse_error():
 def test_malformed_diff_no_hunk_header():
     with tempfile.TemporaryDirectory() as tmp:
         f = _write(Path(tmp) / "f.txt", "a\nb\n")
-        result = edit_file(str(f), "this is not a diff at all\n")
+        result = edit_file(str(f), "this is not a diff at all\n", allow_outside_workdir=True)
         assert not result.ok
         assert "parse failed" in result.text
 
@@ -161,7 +261,7 @@ def test_context_mismatch_apply_error():
             "-beta\n"
             "+BETA\n"
         )
-        result = edit_file(str(f), diff)
+        result = edit_file(str(f), diff, allow_outside_workdir=True)
         assert not result.ok
         assert "apply failed" in result.text
         # Per the SPEC, mismatch errors should tell the agent to re-read.
@@ -177,7 +277,7 @@ def test_removal_mismatch_apply_error():
             "-NOT_Y\n"
             "+Y\n"
         )
-        result = edit_file(str(f), diff)
+        result = edit_file(str(f), diff, allow_outside_workdir=True)
         assert not result.ok
         assert "apply failed" in result.text
 
@@ -193,6 +293,6 @@ def test_file_unchanged_on_apply_failure():
             "+nope\n"
             " me\n"
         )
-        result = edit_file(str(f), diff)
+        result = edit_file(str(f), diff, allow_outside_workdir=True)
         assert not result.ok
         assert f.read_text() == original

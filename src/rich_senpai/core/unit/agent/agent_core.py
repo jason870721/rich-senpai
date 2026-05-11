@@ -54,6 +54,7 @@ from rich_senpai.core.config import (
     MICROCOMPACT_MIN_KEEP_RECENT,
     TODO_NAG_AFTER_ROUNDS,
     TOKEN_THRESHOLD,
+    TOOL_COMPACT_AFTER_ROUND,
     WAIT_DEFAULT_SECONDS,
     WAIT_MAX_SECONDS,
 )
@@ -407,7 +408,7 @@ class AgentCore:
             # then iter keep_recent, 2*keep_recent, …). The recovery map
             # carries originals so re-tiering uses fresh percentages off
             # the unmodified content.
-            if i % self.keep_recent == 0:
+            if (i+1) % TOOL_COMPACT_AFTER_ROUND == 0:
                 microcompact(
                     messages,
                     recovery_map=self._recovery_map,

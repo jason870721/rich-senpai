@@ -2,8 +2,8 @@
 #
 # No line-number prefixing — the LLM gets raw content it can use directly
 # in diffs. Line count and range are noted in the header.
-from pathlib import Path
 
+from rich_senpai.tools.file_access._guard import PathOutsideWorkdirError, resolve_safe
 from rich_senpai.tools.tool_result import ToolResult
 
 
@@ -15,7 +15,8 @@ SPEC = {
         "they are raw content ready to copy into diff bodies. Determine "
         "line numbers by counting from the first returned line (line 1). "
         "Use `offset` and `limit` to read a slice of a large file without "
-        "wasting tokens."
+        "wasting tokens. Access outside the workdir is denied unless "
+        "allow_outside_workdir is set to true."
     ),
     "input_schema": {
         "type": "object",
@@ -36,6 +37,14 @@ SPEC = {
                 "type": "integer",
                 "description": "Maximum number of lines to return. Defaults to all lines.",
             },
+            "allow_outside_workdir": {
+                "type": "boolean",
+                "description": (
+                    "Allow reading files outside the project workdir. "
+                    "Defaults to false — the tool will refuse to read "
+                    "/etc/passwd, ~/.ssh, etc."
+                ),
+            },
         },
         "required": ["path"],
     },
@@ -43,9 +52,16 @@ SPEC = {
 
 
 def read_file(
-    path: str, encoding: str = "utf-8", offset: int = 1, limit: int | None = None
+    path: str,
+    encoding: str = "utf-8",
+    offset: int = 1,
+    limit: int | None = None,
+    allow_outside_workdir: bool = False,
 ) -> ToolResult:
-    file_path = Path(path).expanduser()
+    try:
+        file_path = resolve_safe(path, allow_outside_workdir=allow_outside_workdir)
+    except PathOutsideWorkdirError as exc:
+        return ToolResult(text=f"error: {exc}", ok=False)
     if not file_path.exists():
         return ToolResult(text=f"error: file not found: {path}", ok=False)
     if not file_path.is_file():

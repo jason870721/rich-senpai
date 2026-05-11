@@ -160,8 +160,9 @@ class HistoryInput(TextArea):
 
     def action_submit_input(self) -> None:
         expanded = self.expanded_text()
-        if not expanded.strip():
-            return
+        # Always fire — the host handles empty input appropriately
+        # (e.g. the max_iterations continuation prompt resumes on
+        # empty Enter, and non-empty fall through to a fresh turn).
         self.post_message(self.Submitted(self, expanded))
 
     def action_newline_at_cursor(self) -> None:

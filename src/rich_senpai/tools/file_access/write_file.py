@@ -5,9 +5,8 @@
 # git-diff style alongside edit_file's output. When overwriting an
 # existing file, returns the byte-count confirmation (no diff — we don't
 # read the prior content; in-place changes should use edit_file anyway).
-from pathlib import Path
-
 from rich_senpai.tools.file_access._diff import render_new_file_diff
+from rich_senpai.tools.file_access._guard import PathOutsideWorkdirError, resolve_safe
 from rich_senpai.tools.tool_result import ToolResult
 
 
@@ -20,7 +19,9 @@ SPEC = {
         "/dev/null (so the TUI can render it in git-diff style); on an "
         "overwrite of an existing file the result is a byte-count "
         "confirmation. For in-place edits to an existing file, prefer "
-        "edit_file — it preserves surrounding content."
+        "edit_file — it preserves surrounding content. Access outside "
+        "the workdir is denied unless allow_outside_workdir is set to "
+        "true."
     ),
     "input_schema": {
         "type": "object",
@@ -37,14 +38,30 @@ SPEC = {
                 "type": "string",
                 "description": "Text encoding to write with. Defaults to utf-8.",
             },
+            "allow_outside_workdir": {
+                "type": "boolean",
+                "description": (
+                    "Allow writing files outside the project workdir. "
+                    "Defaults to false — the tool will refuse to write to "
+                    "/etc/passwd, ~/.ssh, etc."
+                ),
+            },
         },
         "required": ["path", "content"],
     },
 }
 
 
-def write_file(path: str, content: str, encoding: str = "utf-8") -> ToolResult:
-    file_path = Path(path).expanduser()
+def write_file(
+    path: str,
+    content: str,
+    encoding: str = "utf-8",
+    allow_outside_workdir: bool = False,
+) -> ToolResult:
+    try:
+        file_path = resolve_safe(path, allow_outside_workdir=allow_outside_workdir)
+    except PathOutsideWorkdirError as exc:
+        return ToolResult(text=f"error: {exc}", ok=False)
     existed_before = file_path.exists()
     try:
         file_path.parent.mkdir(parents=True, exist_ok=True)

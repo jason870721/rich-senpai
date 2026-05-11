@@ -6,14 +6,13 @@
 # Fails if old_str is not found or matches multiple locations.
 from __future__ import annotations
 
-from pathlib import Path
-
 from rich_senpai.tools.file_access._diff import (
     apply_hunks,
     parse_hunks,
     DiffApplyError,
     DiffParseError,
 )
+from rich_senpai.tools.file_access._guard import PathOutsideWorkdirError, resolve_safe
 from rich_senpai.tools.tool_result import ToolResult
 
 
@@ -54,6 +53,13 @@ SPEC = {
                 "type": "string",
                 "description": "The text to replace old_str with.",
             },
+            "allow_outside_workdir": {
+                "type": "boolean",
+                "description": (
+                    "Allow editing files outside the project workdir. "
+                    "Defaults to false."
+                ),
+            },
         },
         "required": ["path", "old_str", "new_str"],
     },
@@ -92,8 +98,12 @@ def replace_in_file(
     path: str,
     old_str: str,
     new_str: str,
+    allow_outside_workdir: bool = False,
 ) -> ToolResult:
-    file_path = Path(path).expanduser()
+    try:
+        file_path = resolve_safe(path, allow_outside_workdir=allow_outside_workdir)
+    except PathOutsideWorkdirError as exc:
+        return ToolResult(text=f"error: {exc}", ok=False)
     if not file_path.exists():
         return ToolResult(text=f"error: file not found: {path}", ok=False)
     if not file_path.is_file():

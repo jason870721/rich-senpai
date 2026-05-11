@@ -27,6 +27,7 @@ from rich_senpai.core.config import (
     TEAM_MAX_TOKENS,
     TEAM_POLL_INTERVAL,
     TEAM_TOKEN_THRESHOLD,
+    TOOL_COMPACT_AFTER_ROUND,
 )
 from rich_senpai.core.llm import (
     LLMClient,
@@ -220,7 +221,7 @@ class TeammateManager:
                     # cheaply (now progressive with a recovery map);
                     # auto_compact runs an LLM-backed summary only if the
                     # budget is genuinely blown.
-                    if work_iter % self.keep_recent == 0:
+                    if (work_iter+1) % TOOL_COMPACT_AFTER_ROUND == 0:
                         microcompact(
                             messages,
                             recovery_map=recovery_map,
