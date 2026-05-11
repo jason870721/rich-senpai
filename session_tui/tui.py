@@ -39,6 +39,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from rich.markdown import Markdown
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -53,6 +54,7 @@ from session_tui import commands, tips
 from session_tui.events import render_event, status_label_for
 from session_tui.panels import BackgroundPanel, CoworkerPanel, TodosPanel
 from session_tui.render import (
+    block,
     format_input_stats,
     format_status_line,
     format_turn_footer,
@@ -113,9 +115,29 @@ class SenpaiApp(App):
         self._bg_tick_timer: Timer | None = None
         # Rotating-tips state for the `#input_hint` placeholder row. The
         # timer advances ``_tip_idx`` every ``tips.ROTATION_SECONDS`` and
-        # repaints the hint only when both user and agent are idle.
+        # repaints the hint only when both user and agent are idle. A
+        # second timer (``_tip_anim_timer``) drives a per-character
+        # typewriter reveal of the active tip and is cancelled the moment
+        # the user types or the agent goes busy.
         self._tip_idx: int = 0
         self._tip_timer: Timer | None = None
+        self._tip_anim_timer: Timer | None = None
+        self._tip_anim_text: str = ""
+        self._tip_anim_pos: int = 0
+        # Typewriter reveal for the agent's text reply. While streaming,
+        # the partial body lives in the `#streaming` Static (plain Text);
+        # when the reveal completes (or is interrupted by a new event /
+        # new turn) the full Markdown-rendered block is committed to the
+        # log. Other event kinds (tool_use, tool_result, …) bypass this
+        # path and render to the log directly as before. If the turn
+        # finishes while the reveal is still in flight, the footer is
+        # parked on ``_pending_turn_footer`` and drained by
+        # ``_finalize_stream`` so it always lands beneath the reply.
+        self._stream_full_text: str = ""
+        self._stream_pos: int = 0
+        self._stream_iter: int = 0
+        self._stream_timer: Timer | None = None
+        self._pending_turn_footer: CycleResult | None = None
         # Cached so /copy can write the most recent agent reply to the
         # system clipboard without re-walking the message list.
         self._last_assistant_text: str = ""
@@ -153,18 +175,56 @@ class SenpaiApp(App):
         hint.update(tips.tip_at(self._tip_idx) if not prompt.text else "")
 
     def _rotate_tip(self) -> None:
-        """Advance to the next tip and repaint the hint if it's currently
-        visible. The timer fires regardless of state — the visibility
-        gate (buffer empty AND agent idle) is re-checked here so we don't
-        clobber the typing/busy view, and the index still advances so
-        the next idle window doesn't park on the same tip forever."""
+        """Advance to the next tip and start the typewriter reveal if the
+        hint is currently visible. The timer fires regardless of state —
+        the visibility gate (buffer empty AND agent idle) is re-checked
+        here so we don't clobber the typing/busy view, and the index
+        still advances so the next idle window doesn't park on the same
+        tip forever."""
         self._tip_idx += 1
         if self._busy:
             return
         prompt = self.query_one(HistoryInput)
         if prompt.text:
             return
-        self.query_one("#input_hint", Static).update(tips.tip_at(self._tip_idx))
+        self._start_tip_animation(tips.tip_at(self._tip_idx))
+
+    def _start_tip_animation(self, tip: str) -> None:
+        """Begin the per-character reveal of ``tip`` in `#input_hint`.
+
+        Any in-flight animation is cancelled first so the new tip starts
+        from char 0. The first character paints immediately so there's
+        no perceptible blank gap at the start of the reveal."""
+        self._cancel_tip_animation()
+        self._tip_anim_text = tip
+        self._tip_anim_pos = 0
+        self._tip_anim_timer = self.set_interval(
+            tips.TYPING_INTERVAL_SECONDS, self._tip_anim_tick
+        )
+        self._tip_anim_tick()
+
+    def _cancel_tip_animation(self) -> None:
+        if self._tip_anim_timer is not None:
+            self._tip_anim_timer.stop()
+            self._tip_anim_timer = None
+
+    def _tip_anim_tick(self) -> None:
+        """Reveal one more character of the active tip. Re-checks the
+        idle gate every tick so the animation aborts cleanly if the user
+        starts typing or the agent enters a turn mid-reveal."""
+        if self._busy:
+            self._cancel_tip_animation()
+            return
+        prompt = self.query_one(HistoryInput)
+        if prompt.text:
+            self._cancel_tip_animation()
+            return
+        self._tip_anim_pos += 1
+        self.query_one("#input_hint", Static).update(
+            self._tip_anim_text[: self._tip_anim_pos]
+        )
+        if self._tip_anim_pos >= len(self._tip_anim_text):
+            self._cancel_tip_animation()
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -177,6 +237,12 @@ class SenpaiApp(App):
         # Coworkers panel — visible only while at least one teammate is
         # alive; hidden the moment the last one shuts down.
         yield Static("", id="coworkers")
+        # Streaming buffer for the agent's in-progress text reply. Empty
+        # (height collapses to 0) while idle; hosts the per-character
+        # typewriter reveal during `assistant_text` events. The fully
+        # Markdown-rendered block is committed to `#log` once the reveal
+        # completes (or is interrupted).
+        yield Static("", id="streaming")
         # Status sits in normal flow between the log and the docked input,
         # so it occupies a fixed 1-row band that's always visible.
         yield Static("", id="status")
@@ -237,9 +303,13 @@ class SenpaiApp(App):
         agent is busy — ``_set_busy`` owns the hint then."""
         if self._busy:
             return
-        self.query_one("#input_hint", Static).update(
-            tips.tip_at(self._tip_idx) if not event.text_area.text else ""
-        )
+        if event.text_area.text:
+            # User started typing — abort any in-flight typewriter reveal
+            # and clear the hint row so it doesn't compete with their text.
+            self._cancel_tip_animation()
+            self.query_one("#input_hint", Static).update("")
+        else:
+            self.query_one("#input_hint", Static).update(tips.tip_at(self._tip_idx))
 
     def on_unmount(self) -> None:
         self.agent.close()
@@ -271,7 +341,13 @@ class SenpaiApp(App):
         if busy:
             # While the agent is looping the status spinner row owns the
             # "what's happening" channel — clear the hint so it doesn't
-            # double up with stale guidance.
+            # double up with stale guidance, and stop any tip-typewriter
+            # reveal that may be mid-flight. A new turn also means any
+            # in-flight assistant-text stream from the previous turn
+            # should be promoted to the log right now (we don't want a
+            # partial reveal hanging while the new round renders).
+            self._cancel_tip_animation()
+            self._finalize_stream()
             hint.update("")
             self._busy_started_at = time.monotonic()
             self._spin_idx = 0
@@ -309,7 +385,73 @@ class SenpaiApp(App):
         # widgets directly — no thread hop needed.
         self._status_iter = event.get("iteration", 0)
         self._status_label = status_label_for(event)
+        # Any non-assistant event mid-stream means the assistant chunk is
+        # logically done — commit it to the log before rendering the new
+        # event so timeline order is preserved (tool_use shouldn't appear
+        # in the log "above" a still-streaming reply).
+        if event.get("type") != "assistant_text" and self._stream_timer is not None:
+            self._finalize_stream()
         render_event(self, event)
+
+    # ----- assistant-text typewriter ---------------------------------------
+
+    def start_streaming(self, text: str, iteration: int) -> None:
+        """Begin a per-character reveal of the agent's text reply in
+        `#streaming`. Any in-flight reveal is finalized first so its
+        Markdown form lands in the log before the new one starts."""
+        self._finalize_stream()
+        self._stream_full_text = text
+        self._stream_pos = 0
+        self._stream_iter = iteration
+        self._stream_timer = self.set_interval(STREAM_INTERVAL, self._stream_tick)
+        self._stream_tick()  # paint the first chunk immediately
+
+    def _stream_tick(self) -> None:
+        self._stream_pos = min(
+            self._stream_pos + STREAM_CHARS_PER_TICK,
+            len(self._stream_full_text),
+        )
+        self._paint_stream_partial()
+        if self._stream_pos >= len(self._stream_full_text):
+            self._finalize_stream()
+
+    def _paint_stream_partial(self) -> None:
+        header = Text()
+        header.append("senpai", style=f"bold {BRAND}")
+        header.append(f"   iter {self._stream_iter}", style="dim")
+        self.query_one("#streaming", Static).update(
+            block(
+                "⏺",
+                BRAND,
+                header,
+                Text(self._stream_full_text[: self._stream_pos]),
+            )
+        )
+
+    def _finalize_stream(self) -> None:
+        """Stop the reveal timer (if any), commit the full reply to the
+        log as a Markdown block, and clear the streaming widget. Drains
+        a deferred turn footer last so the footer always lands beneath
+        the reply it belongs to. Safe to call when no stream is active —
+        the timer-stop and reply-commit become no-ops, but a deferred
+        footer (parked because the turn ended mid-reveal) is still
+        flushed so it can't get orphaned."""
+        if self._stream_timer is not None:
+            self._stream_timer.stop()
+            self._stream_timer = None
+        if self._stream_full_text:
+            header = Text()
+            header.append("senpai", style=f"bold {BRAND}")
+            header.append(f"   iter {self._stream_iter}", style="dim")
+            self.write(Text(""))  # breathing room above
+            self.write(block("⏺", BRAND, header, Markdown(self._stream_full_text)))
+            self.query_one("#streaming", Static).update("")
+            self._stream_full_text = ""
+            self._stream_pos = 0
+        if self._pending_turn_footer is not None:
+            footer = self._pending_turn_footer
+            self._pending_turn_footer = None
+            self._write_turn_footer(footer)
 
     def _write_turn_footer(self, result: CycleResult) -> None:
         self.write(
@@ -379,7 +521,14 @@ class SenpaiApp(App):
         self._total_in_tokens += int(usage.get("input_tokens", 0))
         self._total_out_tokens += int(usage.get("output_tokens", 0))
         self._total_iters += int(result.iterations or 0)
-        self._write_turn_footer(result)
+        if self._stream_timer is not None:
+            # Reveal is still typing out the reply — park the footer so
+            # it can be drained right after the assistant block lands in
+            # the log, instead of slipping above the still-streaming
+            # widget.
+            self._pending_turn_footer = result
+        else:
+            self._write_turn_footer(result)
         self._set_busy(False)
         self._refresh_input_stats()
 
@@ -485,6 +634,12 @@ class SenpaiApp(App):
 # cleared (so it doesn't compete with their own text); when the agent
 # starts looping the status spinner row takes over. The body of the hint
 # is a rotating tip drawn from ``session_tui.tips.TIPS``.
+
+# Typewriter reveal cadence for the agent's text reply. Two chars per
+# 15 ms tick ≈ 133 chars/sec — roughly 3× the tips reveal speed
+# (one char per 25 ms = 40 chars/sec). Tune in tandem if either feels off.
+STREAM_INTERVAL: float = 0.015
+STREAM_CHARS_PER_TICK: int = 2
 
 
 def main() -> None:

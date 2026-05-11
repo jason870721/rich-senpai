@@ -17,6 +17,11 @@ from session_tui.commands import placeholder_summary
 
 
 ROTATION_SECONDS: float = 10.0
+# Seconds between characters during the typewriter reveal of a tip.
+# 25 ms ≈ 40 chars/sec — snappy "coding style" cadence that finishes a
+# typical tip in well under a second, leaving most of the rotation window
+# for the user to actually read it.
+TYPING_INTERVAL_SECONDS: float = 0.025
 MAX_TIPS: int = 10
 
 TIPS: list[str] = [

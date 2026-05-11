@@ -23,7 +23,6 @@ from __future__ import annotations
 
 from typing import Any, Callable, TYPE_CHECKING
 
-from rich.markdown import Markdown
 from rich.text import Text
 
 from core import state
@@ -50,14 +49,17 @@ if TYPE_CHECKING:
 
 
 def render_assistant_text(app: "SenpaiApp", event: dict[str, Any]) -> None:
+    """Hand the agent's text reply off to the App's typewriter reveal.
+
+    The App owns the `#streaming` widget where the partial text lives
+    during the per-character reveal, and commits the final Markdown
+    block to the log once the reveal completes. Other event renderers
+    (tool_use, tool_result, …) keep writing to the log directly — only
+    assistant_text takes this animated path."""
     text = event["text"].strip()
     if not text:
         return
-    header = Text()
-    header.append("senpai", style=f"bold {BRAND}")
-    header.append(f"   iter {event.get('iteration', 0)}", style="dim")
-    app.write(Text(""))  # breathing room above
-    app.write(block("⏺", BRAND, header, Markdown(text)))
+    app.start_streaming(text, event.get("iteration", 0))
 
 
 def render_tool_use(app: "SenpaiApp", event: dict[str, Any]) -> None:

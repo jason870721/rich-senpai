@@ -6,6 +6,8 @@
  *   #todos          — docked TodosPanel (auto-hides when empty)
  *   #bg             — docked BackgroundPanel
  *   #coworkers      — docked CoworkerPanel
+ *   #streaming      — typewriter buffer for the agent's in-progress reply;
+ *                     collapses while idle
  *   #status         — busy spinner + iter + elapsed
  *   #input_dock     — pinned to bottom; vertical stack:
  *     #input_hint   — placeholder hint, visible only when buffer empty and
@@ -46,6 +48,16 @@ RichLog {
     height: auto;
     max-height: 10;
     padding: 0 2;
+}
+
+/* Streaming buffer for the agent's in-progress assistant_text reply.
+ * Auto-height so the row collapses to zero while empty; same horizontal
+ * padding as RichLog so the partial text aligns visually with the
+ * committed entries above. */
+#streaming {
+    height: auto;
+    padding: 0 2;
+    background: $surface;
 }
 
 #input_dock {
