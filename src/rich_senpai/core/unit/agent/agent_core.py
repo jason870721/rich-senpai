@@ -67,7 +67,7 @@ from rich_senpai.core.llm import (
     build_default_client,
 )
 from rich_senpai.core.logging_setup import clip, get_logger
-from rich_senpai.core.unit.agent.sys_prompt import SYSTEM_PROMPT
+from rich_senpai.core.unit.agent.sys_prompt import get_system_prompt
 from rich_senpai.tools import tool_register
 
 
@@ -114,7 +114,7 @@ class AgentCore:
     def __init__(
         self,
         *,
-        system_prompt: str = SYSTEM_PROMPT,
+        system_prompt: str | None = None,
         max_iterations: int = MAX_ITERATIONS,
         max_tokens_per_call: int = MAX_TOKENS_PER_CALL,
         llm: LLMClient | None = None,
@@ -129,7 +129,7 @@ class AgentCore:
                 f"so all progressive compaction tiers are exercised "
                 f"(got {keep_recent})"
             )
-        self.system_prompt = system_prompt
+        self.system_prompt = system_prompt if system_prompt is not None else get_system_prompt()
         self.max_iterations = max_iterations
         self.max_tokens_per_call = max_tokens_per_call
         self.keep_recent = keep_recent

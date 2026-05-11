@@ -6,7 +6,7 @@ from rich_senpai.core.unit.agent.compaction import (
     estimate_tokens,
     microcompact,
 )
-from rich_senpai.core.unit.agent.sys_prompt import SYSTEM_PROMPT, build_system_prompt
+from rich_senpai.core.unit.agent.sys_prompt import build_system_prompt, get_system_prompt
 
 __all__ = [
     "AgentCore",
@@ -16,6 +16,6 @@ __all__ = [
     "auto_compact",
     "estimate_tokens",
     "microcompact",
-    "SYSTEM_PROMPT",
     "build_system_prompt",
+    "get_system_prompt",
 ]

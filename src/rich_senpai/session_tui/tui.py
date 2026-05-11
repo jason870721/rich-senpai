@@ -48,8 +48,8 @@ from textual.timer import Timer
 from textual.widgets import Header, RichLog, Static
 
 from rich_senpai import __version__
-from rich_senpai.core import AgentCore, CycleResult, state
-from rich_senpai.core.unit.agent import auto_compact
+from rich_senpai.core import state
+from rich_senpai.core.unit.agent import AgentCore, CycleResult, auto_compact
 from rich_senpai.core.llm import Message
 from rich_senpai.session_tui import commands, tips
 from rich_senpai.session_tui.events import render_event, status_label_for

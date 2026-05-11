@@ -421,4 +421,13 @@ to them(know their real person).
 """
 
 
-SYSTEM_PROMPT = build_system_prompt()
+_SYSTEM_PROMPT_CACHE: str | None = None
+
+
+def get_system_prompt() -> str:
+    """Lazy singleton — avoids module-level call to :func:`build_system_prompt`
+    which accesses ``state.SKILLS`` and creates a circular import."""
+    global _SYSTEM_PROMPT_CACHE
+    if _SYSTEM_PROMPT_CACHE is None:
+        _SYSTEM_PROMPT_CACHE = build_system_prompt()
+    return _SYSTEM_PROMPT_CACHE
