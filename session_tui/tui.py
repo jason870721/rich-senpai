@@ -7,7 +7,8 @@ Layout (top → bottom):
   todos / bg / coworkers — docked LivePanels, hide when idle
   status             — busy spinner row
   #input_dock        — pinned-bottom Vertical:
-    input_hint       — placeholder / keymap / "agent is thinking…"
+    input_hint       — placeholder shown only when buffer is empty and the
+                       agent is idle; cleared while typing or looping
     prompt_row       — chevron + multi-line HistoryInput
     input_stats      — model · tokens · iter · uptime
 
@@ -48,7 +49,7 @@ from textual.widgets import Header, RichLog, Static
 from core import AgentCore, CycleResult, state
 from core.unit.agent import auto_compact
 from core.llm import Message
-from session_tui import commands
+from session_tui import commands, tips
 from session_tui.events import render_event, status_label_for
 from session_tui.panels import BackgroundPanel, CoworkerPanel, TodosPanel
 from session_tui.render import (
@@ -110,6 +111,11 @@ class SenpaiApp(App):
         # 1Hz tick keeps the bg + coworker panels honest as worker threads
         # and teammate asyncio tasks mutate state outside the agent thread.
         self._bg_tick_timer: Timer | None = None
+        # Rotating-tips state for the `#input_hint` placeholder row. The
+        # timer advances ``_tip_idx`` every ``tips.ROTATION_SECONDS`` and
+        # repaints the hint only when both user and agent are idle.
+        self._tip_idx: int = 0
+        self._tip_timer: Timer | None = None
         # Cached so /copy can write the most recent agent reply to the
         # system clipboard without re-walking the message list.
         self._last_assistant_text: str = ""
@@ -135,10 +141,30 @@ class SenpaiApp(App):
         return f"{provider} ({model})"
 
     def _set_input_hint_for_buffer(self) -> None:
-        """Restore the hint based on whether the input buffer is empty."""
+        """Show the current rotating tip only when the buffer is empty.
+
+        The hint row behaves like a placeholder — it surfaces a tip while
+        the input is empty and the agent is idle, and disappears the
+        moment the user starts typing. Busy-state hiding is owned by
+        ``_set_busy``; the tip rotation itself is driven by
+        ``_rotate_tip`` on a ``tips.ROTATION_SECONDS`` interval."""
         prompt = self.query_one(HistoryInput)
-        text = _PLACEHOLDER_HINT if not prompt.text else _KEYMAP_HINT
-        self.query_one("#input_hint", Static).update(text)
+        hint = self.query_one("#input_hint", Static)
+        hint.update(tips.tip_at(self._tip_idx) if not prompt.text else "")
+
+    def _rotate_tip(self) -> None:
+        """Advance to the next tip and repaint the hint if it's currently
+        visible. The timer fires regardless of state — the visibility
+        gate (buffer empty AND agent idle) is re-checked here so we don't
+        clobber the typing/busy view, and the index still advances so
+        the next idle window doesn't park on the same tip forever."""
+        self._tip_idx += 1
+        if self._busy:
+            return
+        prompt = self.query_one(HistoryInput)
+        if prompt.text:
+            return
+        self.query_one("#input_hint", Static).update(tips.tip_at(self._tip_idx))
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -158,7 +184,7 @@ class SenpaiApp(App):
         # flow top-to-bottom: keymap/placeholder hint → chevron + input
         # row → session stats line.
         with Vertical(id="input_dock"):
-            yield Static(_PLACEHOLDER_HINT, id="input_hint")
+            yield Static(tips.tip_at(0), id="input_hint")
             with Horizontal(id="prompt_row"):
                 yield Static("❯", id="prompt_chevron")
                 yield HistoryInput(
@@ -176,6 +202,7 @@ class SenpaiApp(App):
         self._refresh_input_stats()
         self._session_started_at = time.monotonic()
         self._bg_tick_timer = self.set_interval(1.0, self._tick_panels)
+        self._tip_timer = self.set_interval(tips.ROTATION_SECONDS, self._rotate_tip)
         self.query_one(HistoryInput).focus()
 
     def _tick_panels(self) -> None:
@@ -202,16 +229,16 @@ class SenpaiApp(App):
         )
 
     def on_text_area_changed(self, event: HistoryInput.Changed) -> None:
-        """Toggle the hint between placeholder (empty buffer) and keymap
-        (anything typed). Textual auto-routes ``TextArea.Changed`` to
-        ``on_text_area_changed`` — naming this after the subclass would
-        skip dispatch since ``HistoryInput.Changed`` is just an alias.
-        Skipped while the agent is busy — ``_set_busy`` owns the hint
-        at that point."""
+        """Show the placeholder only while the buffer is empty; clear the
+        hint row the moment the user types anything. Textual auto-routes
+        ``TextArea.Changed`` to ``on_text_area_changed`` — naming this
+        after the subclass would skip dispatch since
+        ``HistoryInput.Changed`` is just an alias. Skipped while the
+        agent is busy — ``_set_busy`` owns the hint then."""
         if self._busy:
             return
         self.query_one("#input_hint", Static).update(
-            _KEYMAP_HINT if event.text_area.text else _PLACEHOLDER_HINT
+            tips.tip_at(self._tip_idx) if not event.text_area.text else ""
         )
 
     def on_unmount(self) -> None:
@@ -242,6 +269,10 @@ class SenpaiApp(App):
         prompt.disabled = busy
         hint = self.query_one("#input_hint", Static)
         if busy:
+            # While the agent is looping the status spinner row owns the
+            # "what's happening" channel — clear the hint so it doesn't
+            # double up with stale guidance.
+            hint.update("")
             self._busy_started_at = time.monotonic()
             self._spin_idx = 0
             self._status_label = "thinking"
@@ -448,14 +479,12 @@ class SenpaiApp(App):
 # Module-level constants
 # ---------------------------------------------------------------------------
 
-# Hint shown above the input. Three modes the App rotates between:
-#   _PLACEHOLDER_HINT  buffer empty, agent idle    — surfaces slash commands
-#   _KEYMAP_HINT       buffer non-empty, agent idle — keymap reminder
-#   _BUSY_HINT         agent in flight             — interrupt instructions
-_PLACEHOLDER_HINT: str = commands.placeholder_summary()
-_KEYMAP_HINT: str = (
-    "↵ submit · !q exit"
-)
+# Placeholder hint shown in the row above the input. Visible only while
+# both the user and the agent are idle — i.e. the buffer is empty and the
+# ReAct loop is not running. When the user starts typing the hint is
+# cleared (so it doesn't compete with their own text); when the agent
+# starts looping the status spinner row takes over. The body of the hint
+# is a rotating tip drawn from ``session_tui.tips.TIPS``.
 
 
 def main() -> None:

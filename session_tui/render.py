@@ -171,13 +171,12 @@ def format_turn_footer(
     return Text.assemble(
         ("\n  ── ", "dim"),
         (f"#{turn_no}  ", f"bold {BRAND}"),
-        (f"stop={stop_reason}", "dim"),
-        (f"   iters {iterations}", "dim"),
+        #(f"stop={stop_reason}", "dim"),
+        (f" iters {iterations}", "dim"),
         (
-            f"   tok in {usage.get('input_tokens', 0)} · out {usage.get('output_tokens', 0)}",
+            f"   token (in:{usage.get('input_tokens', 0)}/out:{usage.get('output_tokens', 0)})",
             "dim",
         ),
-        (f"   {model_label}", "dim"),
         (skill_suffix, "dim"),
     )
 

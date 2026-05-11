@@ -8,7 +8,8 @@
  *   #coworkers      — docked CoworkerPanel
  *   #status         — busy spinner + iter + elapsed
  *   #input_dock     — pinned to bottom; vertical stack:
- *     #input_hint   — placeholder / keymap / "agent is thinking…"
+ *     #input_hint   — placeholder hint, visible only when buffer empty and
+ *                     agent idle; cleared while typing or looping
  *     #prompt_row   — chevron + multi-line HistoryInput
  *     #input_stats  — model · tokens · iter · uptime
  */

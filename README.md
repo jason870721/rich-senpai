@@ -26,22 +26,31 @@ Rich Senpai is a **multi-agent trading system** where a lead agent coordinates s
 ```
 main.py (entry point)
   └── session_tui/tui.py (Textual TUI)
-        └── RichSenpaiAgent (lead agent loop)
-              ├── LLMClient (Anthropic / Ollama)
-              ├── AgentCore (tool execution, ReAct loop)
-              ├── AgentTeam (teammate lifecycle)
-              ├── AgentMessaging (in-process message bus)
-              └── TaskManager (file-backed task board)
+        └── AgentCore (lead ReAct loop, core/unit/agent/agent_core.py)
+              ├── LLMClient        (core/llm/, Anthropic or Ollama)
+              ├── tool_register    (tools/tool_register.py, registry + dispatch)
+              ├── TeammateManager  (core/unit/team/team.py, teammate lifecycle)
+              ├── MessageBus       (core/unit/team/messaging.py, JSONL inbox bus)
+              ├── TaskManager      (core/unit/team/tasks_file.py, file-backed task board)
+              ├── BackgroundManager (core/unit/manager/background.py, fire-and-forget shell)
+              ├── SkillLoader      (core/unit/manager/skills.py)
+              └── TodoManager      (core/unit/manager/todos.py, in-memory todo list)
 ```
+
+The singletons above are constructed once in `core/state.py` and reached by
+tools as `from core import state` (e.g. `state.BUS.send(...)`).
 
 ### How it works
 
-1. **The lead agent** runs a continuous ReAct loop: observe context → reason → act (call tools) → repeat
-2. **Teammates** are spawned as background workers with their own role, prompt, and ReAct loop
-3. **Communication** happens via a thread-safe in-memory message bus (FIFO per recipient)
-4. **Tools** are registered declaratively via `@Tool(name, description, params)` decorator and executed by the core
-5. **Tasks** are stored as JSON documents on disk, enabling shared work across agents and restarts
-6. **Skills** are Markdown files loaded on demand to inject domain knowledge into agent context
+1. **The lead agent** runs a continuous ReAct loop: observe context → reason → act (call tools) → repeat (`core/unit/agent/agent_core.py`).
+2. **Teammates** are spawned as `asyncio.Task` workers with their own role, prompt, and ReAct loop (`core/unit/team/team.py`); a short-lived **subagent** variant powers the `task` tool for one-shot delegated work (`core/unit/subagent/subagent.py`).
+3. **Communication** happens through a thread-safe `MessageBus` backed by per-recipient JSONL inbox files (`core/unit/team/messaging.py`).
+4. **Tools** are plain Python modules under `tools/<bucket>/<tool>.py`. Each module exports a `SPEC` dict (Anthropic-shaped tool schema) and a top-level callable whose name matches the module — no decorator needed. `tools/tool_register.py` imports each module by reference, collects `TOOL_SPECS`, and dispatches `tool_use` blocks through `call_tool()`. See `tools/README.md` for the contract.
+5. **Tasks** are stored as JSON documents on disk by `TaskManager`, enabling shared work across agents and restarts.
+6. **Skills** are Markdown files (`.senpai/skills/<name>/SKILL.md`) loaded on demand by the `load_skill` tool to inject domain knowledge into the agent's context.
+7. **Conversation compaction** keeps the rolling context within token budget — `microcompact` stubs old tool results in place, `auto_compact` LLM-summarizes the full transcript when the budget is exceeded (`core/unit/agent/compaction.py`).
+
+<br>
 
 ## How to start?
 
@@ -90,6 +99,7 @@ The terminal UI supports keyboard navigation and commands:
 | Arrow keys | Navigate message history |
 | `Enter` | Send chat message |
 
+
 ### Chat commands
 
 Type these in the chat panel:
@@ -100,57 +110,111 @@ Type these in the chat panel:
 | `!clear` | Clear message log |
 | `!help` | Show help |
 
+<br>
+
 ## SDK version
 
-**Python 3.14.3**
+**Python 3.+**
+
+<br>
 
 ## Project structure
 
 ```
 rich-senpai/
-├── main.py                     # Entry point
-├── requirements.txt            # Dependencies
-├── .env.example                # Configuration template
-├── .gitignore
-├── README.md                   # This file
+├── main.py                          # Entry point — wires logging then launches the TUI
+├── requirements.txt
+├── .env.example                     # Configuration template (LLM provider, paths, knobs)
+├── README.md
 ├── .senpai/
-│   └── skills/                 # Loadable skill definitions (Markdown)
-├── core/
-│   ├── __init__.py
-│   ├── agent_core.py           # ReAct loop, tool registry, tool execution
-│   ├── config.py               # Settings from env + YAML config file
-│   ├── llm/
-│   │   ├── __init__.py         # LLMClient base class + build_default_client()
-│   │   ├── base.py             # Abstract LLMClient + response types
-│   │   ├── anthropic_client.py # Anthropic API adapter
-│   │   └── ollama_client.py    # Ollama API adapter
-│   ├── messaging.py            # Thread-safe in-process message bus
-│   ├── skills.py               # Skill loading from .senpai/skills/
-│   ├── tasks_file.py           # File-backed JSON task board
-│   └── team.py                 # Teammate lifecycle management
-└── session_tui/
-    ├── __init__.py
-    ├── tui.py                  # Textual TUI with live log, status, and chat
-    └── theme.py                # Rich ThemedStyle definitions
+│   └── skills/                      # Loadable skill bundles (<name>/SKILL.md)
+│
+├── core/                            # Agent runtime
+│   ├── __init__.py                  # Public API: AgentCore, CycleResult, ToolCall
+│   ├── config.py                    # All tunable constants (env-driven, single source of truth)
+│   ├── state.py                     # Process-wide singletons (TODO, SKILLS, TASK_MGR, BG, BUS, …)
+│   ├── logging_setup.py             # File-based logging + payload clipping helpers
+│   ├── llm/                         # Provider-neutral LLM layer
+│   │   ├── base.py                  #   Abstract LLMClient + Message / block types
+│   │   ├── anthropic_client.py      #   Anthropic adapter
+│   │   └── ollama_client.py         #   Ollama adapter
+│   └── unit/                        # Categorized sub-systems
+│       ├── agent/                   #   Lead ReAct loop
+│       │   ├── agent_core.py        #     The loop itself (compaction, dispatch, nags)
+│       │   ├── compaction.py        #     microcompact / auto_compact / estimate_tokens
+│       │   └── sys_prompt.py        #     System prompt builder (config + live skills)
+│       ├── subagent/
+│       │   └── subagent.py          #   Short-lived ReAct loop for the `task` tool
+│       ├── team/                    #   Multi-agent collaboration
+│       │   ├── team.py              #     TeammateManager — persistent asyncio teammates
+│       │   ├── tasks_file.py        #     TaskManager — JSON-per-task on disk
+│       │   └── messaging.py         #     MessageBus + plan/shutdown request registries
+│       └── manager/                 #   Singleton-backed managers
+│           ├── todos.py             #     TodoManager (ephemeral in-process todo list)
+│           ├── skills.py            #     SkillLoader (.senpai/skills discovery)
+│           └── background.py        #     BackgroundManager (fire-and-forget shell tasks)
+│
+├── tools/                           # Lead-agent tool surface
+│   ├── README.md                    # Module contract (SPEC + matching callable, ToolResult)
+│   ├── tool_register.py             # Imports every tool, builds TOOL_SPECS + call_tool()
+│   ├── tool_result.py               # ToolResult dataclass + as_text helper
+│   ├── file_access/                 #   read_file, write_file, edit_file, grep, _diff (helper)
+│   ├── shell/                       #   bash, background_run, check_background, http_request
+│   ├── task_board/                  #   task_create / get / update / list / claim_task
+│   ├── delegation/                  #   task, spawn_teammate, list_teammates
+│   ├── messaging/                   #   send_message, read_inbox, broadcast, shutdown_request, plan_approval
+│   └── memory/                      #   update_short_memory, todo_write, load_skill, compress, idle, wait
+│
+└── session_tui/                     # Textual TUI front-end
+    ├── tui.py                       # App shell — chat input, panels, event loop
+    ├── events.py                    # Render agent events → log lines
+    ├── commands.py                  # In-chat slash commands (/clear, /help, …)
+    ├── panels.py                    # Live status panels (background, coworkers, todos)
+    ├── render.py / widgets.py / welcome.py / theme.py
+    └── ...
 ```
+
+<br>
 
 ## Adding a new tool
 
-Tools are registered with the `@tool()` decorator. Each tool is a function with:
+Tools are plain Python modules — there is no decorator. Each module exports a
+`SPEC` dict (Anthropic-shaped) and a top-level callable whose attribute name
+matches the module's last path segment.
 
-1. A docstring that serves as the tool description
-2. An `annotated params` signature (type hints become JSON schema)
+1. Pick the right bucket under `tools/` (e.g. `tools/file_access/` for file ops,
+   `tools/shell/` for shell-style commands, `tools/messaging/` for inter-agent
+   messages). Create `tools/<bucket>/<your_tool>.py`.
+2. Define `SPEC` and a matching-name handler that returns `ToolResult`. Use
+   `ok=False` to flag a failure the TUI should render in red.
+3. Re-export the new module from `tools/<bucket>/__init__.py`.
+4. Add the module reference to the appropriate group in
+   `tools/tool_register.py::TOOL_GROUPS`.
 
 ```python
-from core.agent_core import tool
+# tools/file_access/hello.py
+from tools.tool_result import ToolResult
 
-@tool
-def hello_world(name: str) -> str:
-    """Print a greeting."""
-    return f"Hello, {name}!"
+
+SPEC = {
+    "name": "hello",
+    "description": "Print a greeting.",
+    "input_schema": {
+        "type": "object",
+        "properties": {"name": {"type": "string"}},
+        "required": ["name"],
+    },
+}
+
+
+def hello(name: str) -> ToolResult:
+    return ToolResult(text=f"Hello, {name}!")
 ```
 
-The tool automatically becomes available to all agents in the system.
+`TOOL_SPECS`, `TOOL_HANDLERS`, and `call_tool()` pick the tool up automatically
+— no other edits required. See `tools/README.md` for the full contract.
+
+<br>
 
 ## Adding a new skill
 
@@ -162,14 +226,15 @@ Skills live in `.senpai/skills/<skill-name>/SKILL.md`. Each skill is a single Ma
 
 The skill is loaded on demand via the `load_skill` tool, which injects its content into the agent's conversation context.
 
+<br>
+
 ## Pending features
 
 ### Short-term
-* Core Refactor: core folder is getting too big, need to break it down into submodules (e.g. llm/, unit/, etc.)
-* Memory System - Growable Agent.
+* Memory System — Growable Agent.
 
 ### Long-term
-* Veronica - A web service that lives with a lead agent.
+* Veronica — A web service that lives with a lead agent.
 
 <br>
 
