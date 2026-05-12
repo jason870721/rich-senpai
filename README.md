@@ -1,6 +1,6 @@
 # Rich Senpai
 
-> 🍣 An autonomous multi-agent system for trading, built in a day.
+> An coding-agent system for fun.
 
 <br>
 
@@ -24,21 +24,36 @@ Rich Senpai is a **multi-agent trading system** where a lead agent coordinates s
 ### Architecture at a glance
 
 ```
-main.py (entry point)
-  └── session_tui/tui.py (Textual TUI)
-        └── AgentCore (lead ReAct loop, core/unit/agent/agent_core.py)
-              ├── LLMClient        (core/llm/, Anthropic or Ollama)
-              ├── tool_register    (tools/tool_register.py, registry + dispatch)
-              ├── TeammateManager  (core/unit/team/team.py, teammate lifecycle)
-              ├── MessageBus       (core/unit/team/messaging.py, JSONL inbox bus)
-              ├── TaskManager      (core/unit/team/tasks_file.py, file-backed task board)
-              ├── BackgroundManager (core/unit/manager/background.py, fire-and-forget shell)
-              ├── SkillLoader      (core/unit/manager/skills.py)
-              └── TodoManager      (core/unit/manager/todos.py, in-memory todo list)
+cli.py                         # Console entrypoint (rich-senpai)
+  └── session_tui/tui.py       # Textual TUI — app, panels, input, events
+        └── core/state.py      # Process-wide singletons (constructed once, shared everywhere)
+              ├── TodoManager        (core/unit/manager/todos.py)
+              ├── SkillLoader        (core/unit/manager/skills.py)
+              ├── TaskManager        (core/unit/team/tasks_file.py, file-backed task board)
+              ├── BackgroundManager  (core/unit/manager/background.py, fire-and-forget shell)
+              ├── MessageBus         (core/unit/team/messaging.py, JSONL inbox bus)
+              ├── LLMClient          (core/llm/ — Anthropic, Ollama, or DeepSeek)
+              └── TeammateManager    (core/unit/team/team.py, async worker lifecycle)
+                    └── Subagent     (core/unit/subagent/subagent.py, one-shot task tool)
+
+AgentCore (core/unit/agent/agent_core.py)   ← imports from state.*, calls tool_register
+  ├── compaction.py              # microcompact + auto_compact (token-budget mgmt)
+  ├── sys_prompt.py              # builds system prompt with persona + tool specs
+  └── tools/tool_register.py     # unified dispatch for 6 bucket-groups:
+        ├── delegation/          #   task, spawn_teammate, list_teammates, messaging
+        ├── file_access/         #   read_file, write_file, edit_file (+ session guard)
+        ├── memory/              #   todo_write, update_master_profile, compress, wait, …
+        ├── messaging/           #   send_message, read_inbox, broadcast, plan_approval, …
+        ├── shell/               #   bash, background_run, check_background
+        ├── task_board/          #   task_create, task_get, task_update, task_list, claim_task
+        └── web/                 #   web_search, web_fetch
 ```
 
-The singletons above are constructed once in `core/state.py` and reached by
-tools as `from core import state` (e.g. `state.BUS.send(...)`).
+All stateful managers are constructed once in `core/state.py` and imported
+by both AgentCore and tool handlers (`from rich_senpai.core import state`).
+The LLM is built lazily on first access so importing `core` doesn't require
+an API key. `tool_result.py` provides `ToolResult` / `as_text` shared by
+all tool handlers and `tool_register.call_tool`.
 
 ### How it works
 
@@ -58,8 +73,14 @@ tools as `from core import state` (e.g. `state.BUS.send(...)`).
 
 - **Python 3.14** (developed on 3.14.3)
 - **API key** for your LLM provider:
-  - Anthropic: `ANTHROPIC_API_KEY` env var, or
+  - Anthropic: `ANTHROPIC_API_KEY` env var
   - Ollama: running `ollama serve` locally
+
+> **🧱 src-layout note**: This project uses a `src/` layout — the `rich_senpai` package
+> lives under `src/rich_senpai/`. Running `python src/rich_senpai/cli.py` directly will
+> fail with `ModuleNotFoundError: No module named 'rich_senpai'` because the package
+> isn't on Python's import path. You **must** install it first (step 3 below), then use
+> the `rich-senpai` command (step 5).
 
 ### Quick start
 
@@ -84,39 +105,25 @@ cp .env.example .env
 #   - ANTHROPIC_API_KEY=<your-key>   (if using Anthropic)
 #   - OLLAMA_MODEL=<model-name>       (if using Ollama)
 
-# 5. Run the TUI
+# 5. Run the TUI (not python src/rich_senpai/cli.py!)
 rich-senpai
 ```
 
-### TUI controls
+<br>
 
-The terminal UI supports keyboard navigation and commands:
+### Troubleshooting
 
-| Key | Action |
-|-----|--------|
-| `Tab` / `Shift+Tab` | Switch between panels (Message Log / System Status / Chat) |
-| `1`, `2`, `3` | Jump to panel 1, 2, or 3 |
-| `q` | Quit the application |
-| `Space` | Pause / resume live updates |
-| Arrow keys | Navigate message history |
-| `Enter` | Send chat message |
-
-
-### Chat commands
-
-Type these in the chat panel:
-
-| Command | Action |
-|---------|--------|
-| `!status` | Show teammate and task board status |
-| `!clear` | Clear message log |
-| `!help` | Show help |
+| Symptom | Likely cause | Fix |
+|---------|-------------|-----|
+| `ModuleNotFoundError: No module named 'rich_senpai'` | The package isn't installed — running `cli.py` directly | `pip install -e .` then use the `rich-senpai` command instead of `python src/rich_senpai/cli.py` |
+| `rich-senpai: command not found` | The `.venv` isn't activated, or you skipped the install step | Run `source .venv/bin/activate` then `pip install -e .` |
+| `ollama: ...` connection errors | Ollama isn't running locally | Start `ollama serve` in another terminal, or switch to `LLM_PROVIDER=anthropic` |
 
 <br>
 
 ## SDK version
 
-**Python 3.+**
+**Python 3.12+**
 
 <br>
 
