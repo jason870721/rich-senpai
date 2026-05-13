@@ -88,12 +88,12 @@ async def run_subagent(
     for i in range(max_iterations):
         # Same cadence as the lead — fire microcompact every `keep_recent`
         # iterations so very-long subagent runs don't bloat their context.
-        if (i+1) % TOOL_COMPACT_AFTER_ROUND == 0:
-            microcompact(
-                messages,
-                recovery_map=recovery_map,
-                keep_recent=keep_recent,
-            )
+        # if (i+1) % TOOL_COMPACT_AFTER_ROUND == 0:
+        #     microcompact(
+        #         messages,
+        #         recovery_map=recovery_map,
+        #         keep_recent=keep_recent,
+        #     )
 
         response = await llm.create_message(
             messages=messages,

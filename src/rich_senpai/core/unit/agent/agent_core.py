@@ -426,13 +426,13 @@ class AgentCore:
             # then iter keep_recent, 2*keep_recent, …). The recovery map
             # carries originals so re-tiering uses fresh percentages off
             # the unmodified content.
-            if (i+1) % TOOL_COMPACT_AFTER_ROUND == 0:
-                microcompact(
-                    messages,
-                    recovery_map=self._recovery_map,
-                    keep_recent=self.keep_recent,
-                )
-            await self._maybe_auto_compact(messages)
+            # if (i+1) % TOOL_COMPACT_AFTER_ROUND == 0:
+            #     microcompact(
+            #         messages,
+            #         recovery_map=self._recovery_map,
+            #         keep_recent=self.keep_recent,
+            #     )
+            # await self._maybe_auto_compact(messages)
             self._drain_background(messages)
             self._drain_inbox(messages)
             self._reach_max_iter_count_prompt(i+1, messages)

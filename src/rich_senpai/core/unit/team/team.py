@@ -221,12 +221,12 @@ class TeammateManager:
                     # cheaply (now progressive with a recovery map);
                     # auto_compact runs an LLM-backed summary only if the
                     # budget is genuinely blown.
-                    if (work_iter+1) % TOOL_COMPACT_AFTER_ROUND == 0:
-                        microcompact(
-                            messages,
-                            recovery_map=recovery_map,
-                            keep_recent=self.keep_recent,
-                        )
+                    # if (work_iter+1) % TOOL_COMPACT_AFTER_ROUND == 0:
+                    #     microcompact(
+                    #         messages,
+                    #         recovery_map=recovery_map,
+                    #         keep_recent=self.keep_recent,
+                    #     )
                     await self._maybe_compact(name, messages, sys_prompt, recovery_map)
 
                     inbox = self.bus.read_inbox(name)
